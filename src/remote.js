@@ -70,6 +70,11 @@ export function toRemoteError(error, endpoint) {
 		return fromHttpStatus(error.code, detailFromBody(index >= 0 ? error.message.slice(index + marker.length) : ''), endpoint);
 	}
 	if (error instanceof McpError) {
+		// The SDK's own "Connection closed" is about this process's link to TestWise; passed on as a JSON-RPC error,
+		// the client would read it as its link to this server closing.
+		if (error.code === ErrorCode.ConnectionClosed) {
+			return new RemoteError('closed', `The connection to TestWise at ${endpoint} closed before it answered. Try again; if it keeps failing, call connect.`);
+		}
 		if (error.code === ErrorCode.RequestTimeout) {
 			return new RemoteError('timeout', `TestWise did not answer in time (${endpoint}). Try again shortly.`);
 		}
