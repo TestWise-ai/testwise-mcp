@@ -133,10 +133,26 @@ function escapeHtml(text) {
 	return String(text).replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-function page(title, message) {
-	return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title>`
-		+ '<style>body{font:16px/1.5 system-ui,sans-serif;margin:15vh auto;max-width:32rem;padding:0 16px;color:#1f2937}</style></head>'
-		+ `<body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
+const PAGE_STYLE = 'body{margin:0;background:#0f172a;color:#e2e8f0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}'
+	+ 'main{max-width:28rem;margin:12vh auto;padding:0 16px}'
+	+ '.brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;font-size:12px;letter-spacing:1.2px;line-height:1.2;color:#fff}'
+	+ '.card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:28px 24px;text-align:center}'
+	+ '.mark{width:48px;height:48px;margin:0 auto 12px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700}'
+	+ '.ok{background:#14532d;color:#86efac}.no{background:#7f1d1d;color:#fca5a5}'
+	+ 'h1{font-size:20px;margin:0 0 8px;color:#f8fafc}p{margin:0;color:#cbd5e1}'
+	+ '.note{margin-top:16px;text-align:center;font-size:13px;color:#94a3b8}';
+const SHIELD = '<svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z" fill="#6d5ce7"/>'
+	+ '<path d="m8.5 12 2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// The page the browser lands on when TestWise sends it back here. This package serves it on 127.0.0.1, and people who
+// expect a TestWise address are surprised by a local one, so it says why. Self-contained: no scripts, no requests.
+function page(title, message, ok) {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · TestWise</title>`
+		+ `<style>${PAGE_STYLE}</style></head><body><main>`
+		+ `<div class="brand">${SHIELD}<span>TEST<br>WISE</span></div>`
+		+ `<div class="card"><div class="mark ${ok ? 'ok' : 'no'}" aria-hidden="true">${ok ? '✓' : '!'}</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></div>`
+		+ '<p class="note">This page comes from TestWise MCP on this computer, which is why its address starts with 127.0.0.1.</p>'
+		+ '</main></body></html>';
 }
 
 function sameSecret(a, b) {
@@ -201,8 +217,8 @@ export async function startLoopback({ expectedState }) {
 		const ok = Boolean(code) && !error;
 		res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
 		res.end(ok
-			? page('Signed in to TestWise', 'You can close this tab.')
-			: page('Sign-in did not finish', 'Return to your coding agent and try again.'));
+			? page('You\'re signed in to TestWise', 'Go back to your coding agent: it finishes connecting by itself. You can close this tab.', true)
+			: page('Sign-in didn\'t finish', 'Go back to your coding agent and try again.', false));
 		settle({
 			code: ok ? code : null,
 			error: error === null ? null : ERROR_CODE.test(error) ? error : 'invalid_error',

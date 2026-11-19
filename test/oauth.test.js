@@ -163,6 +163,10 @@ describe('the sign-in callback', () => {
 		const changed = proxy.nextListChanged();
 		const landed = await approve(link);
 		assert.equal(landed.status, 200);
+		const html = await landed.text();
+		assert.match(html, /<h1>You&#39;re signed in to TestWise<\/h1>/);
+		assert.match(html, /which is why its address starts with 127\.0\.0\.1/, 'it explains the local address');
+		assert.doesNotMatch(html, /<script|<link|src=|https?:\/\//, 'self-contained: no scripts and nothing fetched');
 		await changed;
 		assert.match(text(await proxy.client.callTool({ name: 'connect', arguments: {} })), /^Connected to TestWise\./);
 		assert.deepEqual(fake.state.tokenRequests.map((request) => request.grantType), ['authorization_code'], 'the attacker code was never exchanged');
@@ -189,6 +193,16 @@ describe('the sign-in callback', () => {
 		await approve(link);
 		await changed;
 		assert.ok(names((await proxy.client.listTools()).tools).includes('get_updates'));
+	});
+
+	test('a refused sign-in lands on a page that says it did not finish', { timeout: 15_000 }, async () => {
+		const { callback, state } = await pendingSignIn();
+		const landed = await fetch(`${callback}?error=access_denied&state=${state}`);
+		assert.equal(landed.status, 400);
+		const html = await landed.text();
+		assert.match(html, /<h1>Sign-in didn&#39;t finish<\/h1>/);
+		assert.match(html, /Go back to your coding agent and try again\./);
+		assert.doesNotMatch(html, /<script|<link|src=|https?:\/\//);
 	});
 
 	test('an error from the authorization server is shown without control characters, and capped', async () => {
