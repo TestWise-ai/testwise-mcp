@@ -1,8 +1,10 @@
 import { redact } from './redact.js';
 import { resultText } from './tool-result.js';
 
+// Most MCP clients give up on a request after 60 seconds, so connect always answers before that; the sign-in keeps
+// going in the background and connect can be called again.
 const DEFAULT_WAIT_SECONDS = 45;
-const MAX_WAIT_SECONDS = 120;
+const MAX_WAIT_SECONDS = 50;
 
 export const LOCAL_INSTRUCTIONS = [
 	'TestWise is where QA and the PM test what you build: you publish a release with checks and decisions, and read back their results, bugs and answers.',
@@ -23,6 +25,7 @@ export const connectTool = {
 		properties: {
 			waitSeconds: {
 				type: 'number',
+				maximum: MAX_WAIT_SECONDS,
 				description: `How long to wait for the user to finish signing in before returning (default ${DEFAULT_WAIT_SECONDS}, at most ${MAX_WAIT_SECONDS}).`,
 			},
 		},
