@@ -187,6 +187,17 @@ export class CredentialStore {
 		} while (current !== this.queue);
 	}
 
+	// Whether the lock file still holds this store's lock: another process takes over a lock that looks abandoned,
+	// for instance after this machine slept while holding it.
+	holdsLock() {
+		if (!this.heldLock) return false;
+		try {
+			return readFileSync(this.lockFile, 'utf8') === this.heldLock;
+		} catch {
+			return false;
+		}
+	}
+
 	// For an exiting process: gives up the lock if this store holds it.
 	releaseHeldLock() {
 		if (this.heldLock) this.removeLockIfMine(this.heldLock);

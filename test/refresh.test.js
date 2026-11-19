@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, readdir, readFile, stat, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { CredentialStore } from '../src/credentials.js';
 import { TestwiseOAuthProvider } from '../src/oauth.js';
+import { TokenRefresher } from '../src/refresh.js';
 import { FAKE_INSTRUCTIONS, startFakeTestwise } from '../support/fake-testwise.js';
 import { connectProxy, makeHome } from '../support/proxy-client.js';
 
@@ -155,6 +156,36 @@ describe('refreshing at expiry', () => {
 		assert.equal(fake.refreshCount(), 1);
 		assert.ok(!existsSync(path.join(home.home, '.testwise', 'credentials.lock')), 'the lock was released');
 	});
+
+	for (const newerSaved of [true, false]) {
+		test(`a refresh whose lock was taken over ${newerSaved ? 'keeps the newer pair saved meanwhile' : 'still saves its pair'}`, async () => {
+			fake = await startFakeTestwise();
+			await home.writeCredentials(fake.mintCredentials());
+			const key = `${fake.url}/mcp`;
+			const store = new CredentialStore({ homeDir: home.home });
+			const refresher = new TokenRefresher({ store, serverKey: key, endpoint: new URL(key) });
+			fake.state.tokenDelayMs = 300;
+			const pending = refresher.refresh(store.get(key).tokens);
+			while (fake.refreshCount() === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+
+			// Meanwhile another process judged this one stalled, took the lock over, maybe saved a newer pair, and let go.
+			const lockFile = path.join(home.home, '.testwise', 'credentials.lock');
+			await writeFile(lockFile, JSON.stringify({ pid: process.ppid, host: os.hostname(), at: Date.now(), id: 'other' }));
+			if (newerSaved) new CredentialStore({ homeDir: home.home }).saveTokensHeld(key, tokenPair('newer'));
+			await rm(lockFile);
+
+			const result = await pending;
+			const saved = store.get(key).tokens;
+			if (newerSaved) {
+				assert.equal(saved.access_token, 'at_newer_0123456789', 'the newer pair was not overwritten');
+				assert.equal(result.access_token, 'at_newer_0123456789');
+			} else {
+				assert.equal(saved.access_token, result.access_token);
+				assert.ok(fake.isLive(saved), 'the refreshed pair was saved');
+			}
+			assert.ok(!existsSync(lockFile));
+		});
+	}
 
 	test('an access token about to expire is renewed before it is sent', async () => {
 		fake = await startFakeTestwise({ refreshReuse: 'strict' });

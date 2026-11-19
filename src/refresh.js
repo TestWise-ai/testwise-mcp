@@ -72,7 +72,7 @@ export class TokenRefresher {
 	async run(seen, resourceMetadataUrl) {
 		// Discovery needs no lock, so it happens first and the lock is held only for the token request.
 		const server = await this.discover(resourceMetadataUrl);
-		return this.store.withLock(async () => {
+		const outcome = await this.store.withLock(async () => {
 			const current = this.tokens();
 			if (!current) return null;
 			if (!sameTokens(current, seen)) return current;
@@ -97,8 +97,18 @@ export class TokenRefresher {
 				throw error;
 			}
 			const tokens = { ...fresh, issuer: server.issuer };
+			if (!this.store.holdsLock()) return { lostLock: true, from: current, tokens };
 			this.store.saveTokensHeld(this.serverKey, tokens);
 			return tokens;
+		});
+		if (!outcome?.lostLock) return outcome;
+		// The lock was taken over while this refresh was slow. Under the lock again: if another process saved a newer
+		// pair (or signed out) meanwhile, that stands; otherwise this pair is saved.
+		return this.store.withLock(async () => {
+			const stored = this.tokens();
+			if (!sameTokens(stored, outcome.from)) return stored;
+			this.store.saveTokensHeld(this.serverKey, outcome.tokens);
+			return outcome.tokens;
 		});
 	}
 }
