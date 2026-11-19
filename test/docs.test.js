@@ -55,3 +55,10 @@ test('the snippets hold no secrets', async () => {
 	const readme = await read('README.md');
 	assert.doesNotMatch(readme, /Bearer\s+\S|TESTWISE_TOKEN|access_token|refresh_token/);
 });
+
+test('the package needs Node 22 or later, and CI runs the tests on 22 and 24', async () => {
+	const [pkg, workflow, readme] = await Promise.all([read('package.json'), read('.github/workflows/test.yml'), read('README.md')]);
+	assert.equal(JSON.parse(pkg).engines.node, '>=22');
+	assert.match(workflow, /node: \[22, 24\]/);
+	assert.match(readme, /Node\.js 22 or later/);
+});

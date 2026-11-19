@@ -41,7 +41,7 @@ your client's spelling.
 ### The local server (this package)
 
 Runs on your machine over stdio, proxies the remote server, and adds `attach_file`, which uploads screenshots, logs
-and recordings from your disk. Node.js 20 or later.
+and recordings from your disk. Node.js 22 or later.
 
 ```
 npx -y testwise-mcp
