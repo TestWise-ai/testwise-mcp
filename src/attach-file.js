@@ -106,14 +106,23 @@ function failure(message) {
 	return { isError: true, content: [{ type: 'text', text: redact(`Not attached: ${message}`) }] };
 }
 
-export function resolveLocalPath(input, cwd) {
+// On Windows, a path starting with two slashes of either kind names a network share (\\server\share, \\?\UNC\...)
+// or a device (\\.\pipe\...); reading one can send this machine's credentials to another host.
+const WINDOWS_NETWORK_PATH = /^[\\/]{2}/;
+
+export function resolveLocalPath(input, cwd, { platform = process.platform, pathImpl = path, homeDir = os.homedir() } = {}) {
 	const value = input.trim();
 	// "C:\..." is a Windows drive, anything else shaped like "scheme:" is a URL and is refused.
 	if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) && !/^[A-Za-z]:[\\/]/.test(value)) {
 		throw new AttachError(`"${value.split(':')[0]}:" is a URL scheme. attach_file reads local files only; pass a file path.`);
 	}
-	const expanded = value === '~' || value.startsWith('~/') ? path.join(os.homedir(), value.slice(1)) : value;
-	return path.resolve(cwd, expanded);
+	const windows = platform === 'win32';
+	const networkPath = () => new AttachError(`${value} is a network or device path. attach_file reads files on this machine only; pass a local path.`);
+	if (windows && WINDOWS_NETWORK_PATH.test(value)) throw networkPath();
+	const expanded = value === '~' || value.startsWith('~/') ? pathImpl.join(homeDir, value.slice(1)) : value;
+	const resolved = pathImpl.resolve(cwd, expanded);
+	if (windows && WINDOWS_NETWORK_PATH.test(resolved)) throw networkPath();
+	return resolved;
 }
 
 function unreadable(resolved, error) {
@@ -256,7 +265,7 @@ export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = 
 	let resolved;
 	let bytes;
 	try {
-		resolved = resolveLocalPath(filePath, cwd);
+		resolved = resolveLocalPath(filePath, cwd, { homeDir });
 		bytes = await readLocalFile(resolved, homeDir);
 	} catch (error) {
 		if (error instanceof AttachError) return failure(error.message);
