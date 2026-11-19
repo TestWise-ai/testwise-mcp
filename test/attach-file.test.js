@@ -248,7 +248,7 @@ describe('attach_file', () => {
 		for (const target of refused) {
 			const result = await attach(proxy, { key: 'LAR-41', path: target });
 			assert.equal(result.isError, true, target);
-			assert.match(text(result), /attach_file never uploads/, target);
+			assert.match(text(result), /so attach_file does not upload it/, target);
 		}
 		assert.equal(remote.state.calls.length, 0, 'TestWise was never asked for an upload');
 		assert.equal(remote.state.uploadRequests.length, 0);

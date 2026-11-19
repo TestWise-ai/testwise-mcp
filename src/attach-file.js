@@ -4,6 +4,7 @@ import { open, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ancestry, blockedRule, blockedSet, holdsPrivateKey } from './attach-policy.js';
 import { isSecureUrl } from './config.js';
 import { forgetSecret, redact, registerSecret } from './redact.js';
 import { readAttachment, readUploadTicket, resultText } from './tool-result.js';
@@ -64,35 +65,6 @@ export const attachFileTool = {
 	annotations: { title: 'Attach a local file', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 };
 
-// Never uploaded, whatever an agent is asked to do: the TestWise sign-in, and the usual homes of credentials and keys.
-// Matched on the path as given and on the file it resolves to, so a symlink cannot smuggle one out.
-const SECRET_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.azure', '.config/gcloud', '.gnupg', 'Library/Keychains'];
-const SECRET_FILES = ['.docker/config.json', '.kube/config', '.git-credentials'];
-const SECRET_NAMES = [
-	[/^\.env/, '.env*'],
-	[/^\.npmrc$/, '.npmrc'],
-	[/^\.netrc$/, '.netrc'],
-	[/\.pem$/, '*.pem'],
-	[/\.key$/, '*.key'],
-	[/^id_/, 'id_*'],
-	[/\.keychain(?:-db)?$/, 'keychains'],
-];
-
-function isWithin(child, parent) {
-	const relative = path.relative(parent.toLowerCase(), child.toLowerCase());
-	return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-// The denylist rule a path falls under, or null. Compared without case, as macOS and Windows file systems do.
-export function secretRule(filePath, homes) {
-	for (const home of homes) {
-		for (const directory of SECRET_DIRECTORIES) if (isWithin(filePath, path.join(home, directory))) return `~/${directory}`;
-		for (const file of SECRET_FILES) if (filePath.toLowerCase() === path.join(home, file).toLowerCase()) return `~/${file}`;
-	}
-	const name = path.basename(filePath).toLowerCase();
-	return SECRET_NAMES.find(([pattern]) => pattern.test(name))?.[1] ?? null;
-}
-
 export function contentTypeFor(fileName) {
 	return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream';
 }
@@ -138,6 +110,10 @@ function unreadable(resolved, error) {
 // the path was already resolved and checked.
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
 
+function refusedSecret(resolved, rule) {
+	return new AttachError(`${resolved} is a credentials or key file (${rule}), so attach_file does not upload it.`);
+}
+
 async function readLocalFile(resolved, homeDir) {
 	let real;
 	try {
@@ -145,9 +121,10 @@ async function readLocalFile(resolved, homeDir) {
 	} catch (error) {
 		throw unreadable(resolved, error);
 	}
-	const homes = [homeDir, await realpath(homeDir).catch(() => homeDir)];
-	const rule = secretRule(resolved, homes) ?? secretRule(real, homes);
-	if (rule) throw new AttachError(`${resolved} is a credentials or key file (${rule}), and attach_file never uploads those.`);
+	const chain = await ancestry(real);
+	const { blocked, complete } = await blockedSet(homeDir);
+	const rule = blockedRule({ resolved, real, chain, homeDir, blocked });
+	if (rule) throw refusedSecret(resolved, rule);
 
 	let handle;
 	try {
@@ -157,12 +134,21 @@ async function readLocalFile(resolved, homeDir) {
 	}
 	try {
 		// Everything is decided on the open handle, so the file cannot be swapped between the check and the read.
-		const info = await handle.stat();
+		const info = await handle.stat({ bigint: true });
 		if (info.isDirectory()) throw new AttachError(`${resolved} is a directory. Pass a single file.`);
 		if (!info.isFile()) throw new AttachError(`${resolved} is not a regular file.`);
-		checkSize(resolved, info.size);
+		const id = `${info.dev}:${info.ino}`;
+		if (id !== chain[0]) throw new AttachError(`${resolved} changed while it was being checked. Try again.`);
+		// A hard link is the same file under another name; it is refused if the walk of the blocked folders found it,
+		// or could not finish.
+		if (info.nlink > 1n && !complete) {
+			throw new AttachError(`${resolved} has other hard links that could not all be checked, so attach_file does not upload it.`);
+		}
+		const size = Number(info.size);
+		checkSize(resolved, size);
 		const bytes = await handle.readFile();
-		if (bytes.length !== info.size) throw new AttachError(`${resolved} changed while it was being read. Try again.`);
+		if (bytes.length !== size) throw new AttachError(`${resolved} changed while it was being read. Try again.`);
+		if (holdsPrivateKey(bytes)) throw new AttachError(`${resolved} contains a private key, so attach_file does not upload it.`);
 		return bytes;
 	} finally {
 		await handle.close();
