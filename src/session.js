@@ -211,6 +211,16 @@ export class Session extends EventEmitter {
 		return { status: 'pending', url: attempt.url };
 	}
 
+	// Waits, at most ms, for a refresh in flight and for pending credential writes. A refresh whose answer is lost
+	// cannot be repeated: TestWise has already rotated the refresh token this process sent.
+	async drain(ms) {
+		const deadline = Date.now() + ms;
+		while (this.refresher.pending && Date.now() < deadline) {
+			await withTimeout(this.refresher.pending.catch(() => {}), deadline - Date.now());
+		}
+		await withTimeout(this.store.idle(), Math.max(0, deadline - Date.now()));
+	}
+
 	async close() {
 		this.signIn?.close();
 		await this.remote?.close().catch(() => {});

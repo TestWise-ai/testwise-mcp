@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { lstat, mkdir, readdir, readFile, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,6 +133,27 @@ describe('refreshing at expiry', () => {
 			}
 		};
 		for (let batch = 0; batch < 6; batch += 1) await Promise.all([0, 1, 2, 3, 4].map(round));
+	});
+
+	test('closing the server in the middle of a refresh keeps the new pair (strict server)', async () => {
+		fake = await startFakeTestwise({ refreshReuse: 'strict' });
+		await home.writeCredentials(fake.mintCredentials());
+		const first = await connectProxy({ url: fake.url, home: home.home });
+		fake.expireAccessTokens();
+		fake.state.tokenDelayMs = 1000;
+		const call = first.client.callTool({ name: 'whoami', arguments: {} }).catch(() => null);
+		while (fake.refreshCount() === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		await first.close();
+		await call;
+		fake.state.tokenDelayMs = 0;
+
+		const next = await connectProxy({ url: fake.url, home: home.home });
+		proxies.push(next);
+		assert.equal(next.client.getInstructions(), FAKE_INSTRUCTIONS, `still signed in: ${next.stderr()}`);
+		assert.deepEqual(fake.state.reuseDetections, []);
+		assert.equal(fake.refreshCount(), 1);
+		assert.ok(!existsSync(path.join(home.home, '.testwise', 'credentials.lock')), 'the lock was released');
 	});
 
 	test('an access token about to expire is renewed before it is sent', async () => {

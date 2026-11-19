@@ -178,6 +178,15 @@ export class CredentialStore {
 		}
 	}
 
+	// Resolves once every change queued so far, and any queued while waiting, has been written.
+	async idle() {
+		let current;
+		do {
+			current = this.queue;
+			await current;
+		} while (current !== this.queue);
+	}
+
 	// For an exiting process: gives up the lock if this store holds it.
 	releaseHeldLock() {
 		if (this.heldLock) this.removeLockIfMine(this.heldLock);

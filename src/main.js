@@ -13,6 +13,7 @@ export const { version } = JSON.parse(readFileSync(new URL('../package.json', im
 export const LOCAL_TOOLS = [{ definition: attachFileTool, run: (args, context) => attachFile(args, context) }];
 
 const CACHED_CONNECT_WAIT_MS = 15_000;
+const SHUTDOWN_WAIT_MS = 15_000;
 
 async function serve(config) {
 	const store = new CredentialStore();
@@ -40,10 +41,14 @@ async function serve(config) {
 	const shutdown = async () => {
 		if (closing) return;
 		closing = true;
+		// A refresh in flight must be saved before exiting, or the next session would present a spent refresh token.
+		await session.drain(SHUTDOWN_WAIT_MS).catch(() => {});
 		await server.close().catch(() => {});
 		await session.close().catch(() => {});
+		store.releaseHeldLock();
 		process.exit(0);
 	};
+	process.on('exit', () => store.releaseHeldLock());
 	process.stdin.on('end', shutdown);
 	process.stdin.on('close', shutdown);
 	process.on('SIGINT', shutdown);
