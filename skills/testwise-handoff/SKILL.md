@@ -59,16 +59,16 @@ should go through them.
   and two lemons to the shopping list."* Include the setup if it matters ("After 6 pm…", "On a second phone…").
 - **Expect**: the observable outcome, what the tester can see or hear, with numbers where they help ("within 10
   seconds"). Not internals: never "the sync job runs".
-- **Where** (`platforms`): these become the columns QA records results in, so each value must be something a tester
+- **Where** (`where`): these become the columns QA records results in, so each value must be something a tester
   picks as "I'm testing on: X": devices or surfaces such as `iOS`, `Android`, `Web`, `Voice`, `Watch`. Never use a
   generic "App"; expand it to the real platforms (`"App"` → `["iOS", "Android"]`). Set `release.platforms` to the
   ordered union of the platforms your checks use.
-- **Seen**: engineering's own evidence. `"yes"` only if you saw it work on a real device or surface. `"partial"` with a
-  `seenNote` when only part was seen ("Android: Yes. iOS: No", "Found: Yes. Sent: No"). Otherwise `"no"`, with a
+- **Seen**: engineering's own evidence. `"YES"` only if you saw it work on a real device or surface. `"PARTIAL"` with a
+  `seenNote` when only part was seen ("Android: Yes. iOS: No", "Found: Yes. Sent: No"). Otherwise `"NO"`, with a
   `seenNote` if there is something to say ("Simulator only", "Unit tests only"). Passing tests, simulators and reading
   the code are not Seen. Never mark a check Seen without evidence; QA tests the "no" rows first.
 - **key**: a stable slug, `area.behaviour`, such as `reminders.arrive-at-store`. Reuse it whenever you republish.
-- **Never rules**: behaviour that must never happen goes in as checks with `kind: "never"`, in their own area (for
+- **Never rules**: behaviour that must never happen goes in as checks with `kind: "NEVER"`, in their own area (for
   example "Should never happen"). The rule goes in Try; Expect may be empty. QA reports a violation from that row.
 
 ### Decisions for the PM
@@ -78,7 +78,7 @@ Whenever you built something one way and the PM might want it another way, add a
 - `question`: one question, answerable without reading code.
 - `built`: what you built, so "keep as built" has a clear meaning.
 - `options`: the realistic alternatives, as-built first.
-- `assignee`: the PM's email, if you know it.
+- `assignee`: the PM's email; `list_members` shows the project's members and their roles.
 
 Never answer a decision yourself. Answers come from people in TestWise and reach you through `get_updates`.
 
@@ -126,8 +126,8 @@ coding agent publishes:
       "area": "Households",
       "try": "Open an invite link on a phone that doesn't have Larder installed.",
       "expect": "The store page opens. After installing and signing in, you land in the household that invited you, without opening the link again.",
-      "platforms": ["iOS", "Android"],
-      "seen": "partial",
+      "where": ["iOS", "Android"],
+      "seen": "PARTIAL",
       "seenNote": "Android: Yes. iOS: No"
     },
     {
@@ -135,8 +135,8 @@ coding agent publishes:
       "area": "Lists and sync",
       "try": "Turn on airplane mode, tick off three items, then turn airplane mode off.",
       "expect": "The ticks stay, and the other members of the household see them within 10 seconds.",
-      "platforms": ["iOS", "Android"],
-      "seen": "no",
+      "where": ["iOS", "Android"],
+      "seen": "NO",
       "seenNote": "Simulator only"
     },
     {
@@ -144,40 +144,40 @@ coding agent publishes:
       "area": "Lists and sync",
       "try": "Say \"Add oat milk and two lemons to the shopping list.\"",
       "expect": "Two items appear on the list, \"Oat milk\" and \"Lemons (2)\", and the speaker repeats both back.",
-      "platforms": ["Voice"],
-      "seen": "yes"
+      "where": ["Voice"],
+      "seen": "YES"
     },
     {
       "key": "lists.share-web",
       "area": "Lists and sync",
       "try": "On the web, share a list with a test address.",
       "expect": "The invite arrives by email within a minute, and the list shows the person as invited.",
-      "platforms": ["Web"],
-      "seen": "yes"
+      "where": ["Web"],
+      "seen": "YES"
     },
     {
       "key": "reminders.arrive-at-store",
       "area": "Reminders",
       "try": "Add the reminder \"when I get to the grocery store\" to a list, then walk into a grocery store.",
       "expect": "Within a minute of arriving, a notification names the list and the store. Tapping it opens the list.",
-      "platforms": ["iOS", "Android"],
-      "seen": "no"
+      "where": ["iOS", "Android"],
+      "seen": "NO"
     },
     {
       "key": "never.lost-items",
-      "kind": "never",
+      "kind": "NEVER",
       "area": "Should never happen",
       "try": "An item disappears from a shared list without anyone removing it.",
       "expect": "",
-      "platforms": ["iOS", "Android", "Web", "Voice"]
+      "where": ["iOS", "Android", "Web", "Voice"]
     },
     {
       "key": "never.checkout",
-      "kind": "never",
+      "kind": "NEVER",
       "area": "Should never happen",
       "try": "Larder places an order or shows a payment form without the user tapping Order.",
       "expect": "",
-      "platforms": ["iOS", "Android", "Web", "Voice"]
+      "where": ["iOS", "Android", "Web", "Voice"]
     }
   ],
   "decisions": [
@@ -203,7 +203,7 @@ What makes it work:
 
 - Where lists real surfaces. The web-only and voice-only behaviours have their own checks, so no row says "App".
 - `release.platforms` is the ordered union of every check's platforms: iOS, Android, Web, Voice.
-- Seen is honest: "partial" with a note where only Android was seen, "no" with "Simulator only" where nothing was
+- Seen is honest: PARTIAL with a note where only Android was seen, NO with "Simulator only" where nothing was
   seen on a device.
 - The never rules have their own area and cover every platform.
 - Each decision states what was built, so the PM can keep it or change it in one step.

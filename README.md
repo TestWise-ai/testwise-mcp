@@ -78,9 +78,9 @@ To switch to another project, run `logout`, then `login` (or call `connect`) and
 ### What signing in grants
 
 A sign-in reaches one project, and acts as you with contributor rights at most: the agent can publish releases, file
-and update items, comment and record results, but it cannot delete things, change settings or answer the PM's
-decisions. Its activity is labelled with the connection's name, and you can disconnect it at any time from the Agents
-panel on the Releases page in TestWise, or with `testwise-mcp logout`.
+and update items, comment, record results and attach files, but it cannot delete things, change settings or answer
+the PM's decisions. Its activity is labelled with the connection's name, and you can disconnect it at any time under
+Coding agents on the Releases page in TestWise (the Agents button on a phone), or with `testwise-mcp logout`.
 
 ## Tools
 
@@ -95,6 +95,7 @@ The local server lists whatever tools the remote server offers, so new ones appe
 | `record_result` | Records a result the agent produced itself on a real device or emulator. |
 | `request_retest` | Moves a fixed bug to review and asks QA to re-test it on the build that contains the fix. |
 | `create_attachment_upload`, `complete_attachment_upload` | The two halves of an upload; `attach_file` uses them for you. |
+| `list_members` | The project's members with their name, email and role: the emails to use as assignees. |
 | `whoami` | The project, user and connection the agent acts for. |
 | `connect` (local) | Signs in through the browser. Listed only while the local server is signed out. |
 | `attach_file` (local) | Uploads a local file, up to 25 MB, to an item: `{ "key": "LAR-41", "path": "/abs/path/to/screenshot.png" }`. |
@@ -104,15 +105,15 @@ The local server lists whatever tools the remote server offers, so new ones appe
 - **One check per user-visible behaviour**, grouped by area, in the order a tester should go through them.
 - **Try** is what the tester does or says, concretely, with exact words in quotes for anything typed or spoken.
 - **Expect** is the observable outcome: what the tester can see or hear, with numbers where they help.
-- **Where** (`platforms`) becomes the columns QA records results in, so each value must be something a tester picks
+- **Where** (`where`) becomes the columns QA records results in, so each value must be something a tester picks
   as "I'm testing on: X": a device or surface such as `iOS`, `Android`, `Web`, `Voice` or `Watch`. Never a generic
   "App": expand it to the real platforms (`"App"` → `["iOS", "Android"]`). Set `release.platforms` to the ordered union
   of the platforms the checks use.
-- **Seen** is engineering's own evidence: `"yes"` only when someone saw it work on a real device; `"partial"` with a
-  `seenNote` such as `"Android: Yes. iOS: No"`; otherwise `"no"`. Tests and simulators are not Seen.
+- **Seen** is engineering's own evidence: `"YES"` only when someone saw it work on a real device; `"PARTIAL"` with a
+  `seenNote` such as `"Android: Yes. iOS: No"`; otherwise `"NO"`. Tests and simulators are not Seen.
 - **key**: give every check a stable key such as `lists.offline-edits`, so publishing again updates the row instead of
   adding a new one.
-- **Never rules**: behaviour that must never happen goes in as checks with `kind: "never"`, in their own area.
+- **Never rules**: behaviour that must never happen goes in as checks with `kind: "NEVER"`, in their own area.
 - **Decisions**: one question each, with what was built (`built`) and the options. Only people answer them.
 - **Release notes** say what a tester needs before starting: builds, test accounts, cleanup, what never to do, and
   what to capture when something fails.
@@ -136,8 +137,8 @@ A short example, for a fictional shopping-list app:
       "area": "Lists and sync",
       "try": "Turn on airplane mode, tick off three items, then turn airplane mode off.",
       "expect": "The ticks stay, and the other members of the household see them within 10 seconds.",
-      "platforms": ["iOS", "Android"],
-      "seen": "partial",
+      "where": ["iOS", "Android"],
+      "seen": "PARTIAL",
       "seenNote": "Android: Yes. iOS: No"
     },
     {
@@ -145,16 +146,16 @@ A short example, for a fictional shopping-list app:
       "area": "Lists and sync",
       "try": "Say \"Add oat milk and two lemons to the shopping list.\"",
       "expect": "Two items appear on the list, and the speaker repeats both back.",
-      "platforms": ["Voice"],
-      "seen": "no"
+      "where": ["Voice"],
+      "seen": "NO"
     },
     {
       "key": "never.lost-items",
-      "kind": "never",
+      "kind": "NEVER",
       "area": "Should never happen",
       "try": "An item disappears from a shared list without anyone removing it.",
       "expect": "",
-      "platforms": ["iOS", "Android", "Voice"]
+      "where": ["iOS", "Android", "Voice"]
     }
   ],
   "decisions": [
@@ -183,9 +184,9 @@ This project hands its releases to QA and the PM through TestWise (the `testwise
 - If the TestWise tools are missing and only `connect` is listed, call `connect` and ask the user to finish signing in and choosing the project in the browser.
 - At the start of every session, call `get_updates` and act on what it returns: new bugs, comments, test results and answered decisions.
 - After you ship a batch of user-visible work, call `publish_release` once, with the release notes and builds, one check per user-visible behaviour, and a decision for each choice the PM should confirm.
-  - Try: what the tester does or says. Expect: what they should see or hear. Where: the devices or surfaces to test on (iOS, Android, Web, Voice, …), never a generic "App". Set `release.platforms` to the ordered union of the platforms the checks use.
-  - Seen: "yes" only if you saw it work on a real device; "partial" with a `seenNote` such as "Android: Yes. iOS: No"; otherwise "no". Tests and simulators are not Seen.
-  - Give every check a stable `key` (for example `lists.offline-edits`) so a republish updates it. Add things that must never happen as `kind: "never"` checks in their own area.
+  - Try: what the tester does or says. Expect: what they should see or hear. Where (`where`): the devices or surfaces to test on (iOS, Android, Web, Voice, …), never a generic "App". Set `release.platforms` to the ordered union of the platforms the checks use.
+  - Seen: "YES" only if you saw it work on a real device; "PARTIAL" with a `seenNote` such as "Android: Yes. iOS: No"; otherwise "NO". Tests and simulators are not Seen.
+  - Give every check a stable `key` (for example `lists.offline-edits`) so a republish updates it. Add things that must never happen as `kind: "NEVER"` checks in their own area.
   - For each decision, say what you built and the options. Never answer a decision yourself.
 - When you fix a bug, call `request_retest` with the build that contains the fix.
 - Attach screenshots, logs and recordings with `attach_file` (local server only).

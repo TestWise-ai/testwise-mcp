@@ -8,17 +8,22 @@ function jsonBlocks(markdown) {
 	return [...markdown.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1]));
 }
 
-// The handoff rules the docs teach, applied to the docs' own examples.
+// The fields publish_release accepts on a check (its schema refuses any other), and the handoff rules the docs teach,
+// applied to the docs' own examples.
+const CHECK_FIELDS = ['key', 'kind', 'area', 'try', 'expect', 'where', 'seen', 'seenNote', 'priority'];
+
 function checkPayload(payload) {
 	const union = [];
 	for (const check of payload.checks) {
+		for (const field of Object.keys(check)) assert.ok(CHECK_FIELDS.includes(field), `publish_release has no check field ${field}: ${check.key}`);
 		assert.match(check.key, /^[a-z0-9-]+\.[a-z0-9-]+$/, `stable key: ${check.key}`);
 		assert.ok(check.area && check.try, `area and try: ${check.key}`);
-		assert.ok(check.platforms.length > 0, `where: ${check.key}`);
-		assert.ok(!check.platforms.includes('App'), `never a generic "App": ${check.key}`);
-		if (check.kind !== 'never') assert.ok(['yes', 'no', 'partial'].includes(check.seen), `seen: ${check.key}`);
-		if (check.seen === 'partial') assert.ok(check.seenNote, `partial needs a seenNote: ${check.key}`);
-		for (const platform of check.platforms) if (!union.includes(platform)) union.push(platform);
+		assert.ok(check.kind === undefined || ['CHECK', 'NEVER'].includes(check.kind), `kind: ${check.key}`);
+		assert.ok(check.where.length > 0, `where: ${check.key}`);
+		assert.ok(!check.where.includes('App'), `never a generic "App": ${check.key}`);
+		if (check.kind !== 'NEVER') assert.ok(['YES', 'NO', 'PARTIAL'].includes(check.seen), `seen: ${check.key}`);
+		if (check.seen === 'PARTIAL') assert.ok(check.seenNote, `partial needs a seenNote: ${check.key}`);
+		for (const platform of check.where) if (!union.includes(platform)) union.push(platform);
 	}
 	assert.deepEqual([...payload.release.platforms].sort(), [...union].sort(), 'release.platforms is the union of the checks');
 	assert.equal(new Set(payload.checks.map((check) => check.key)).size, payload.checks.length, 'keys are unique');
