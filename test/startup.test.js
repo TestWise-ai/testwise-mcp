@@ -39,7 +39,7 @@ describe('startup', () => {
 		try {
 			assert.match(proxy.stderr(), new RegExp(`Could not connect to TestWise yet: Could not reach TestWise at http://127\\.0\\.0\\.1:${port}/mcp \\(ECONNREFUSED\\)`));
 			const { tools } = await proxy.client.listTools();
-			assert.deepEqual(tools.map((tool) => tool.name), ['connect']);
+			assert.deepEqual(tools.map((tool) => tool.name), ['connect', 'attach_file']);
 			const result = await proxy.client.callTool({ name: 'connect', arguments: { waitSeconds: 1 } });
 			assert.equal(result.isError, true);
 			assert.match(result.content[0].text, /^Could not connect to TestWise: Could not reach TestWise at .* \(ECONNREFUSED\)/);

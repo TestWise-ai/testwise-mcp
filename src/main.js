@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { attachFile, attachFileTool } from './attach-file.js';
 import { runCommand, USAGE } from './cli.js';
 import { readConfig } from './config.js';
 import { CredentialStore } from './credentials.js';
@@ -9,7 +10,7 @@ import { Session } from './session.js';
 
 export const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-export const LOCAL_TOOLS = [];
+export const LOCAL_TOOLS = [{ definition: attachFileTool, run: (args, context) => attachFile(args, context) }];
 
 const CACHED_CONNECT_WAIT_MS = 15_000;
 
@@ -50,7 +51,7 @@ async function serve(config) {
 
 	await server.connect(new StdioServerTransport());
 	if (session.connected) {
-		log(`connected to ${config.endpoint.href}: ${session.tools.length} TestWise tools.`);
+		log(`connected to ${config.endpoint.href}: ${session.tools.length} TestWise tools, plus ${LOCAL_TOOLS.map((tool) => tool.definition.name).join(', ')}.`);
 	}
 }
 

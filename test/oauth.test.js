@@ -37,17 +37,20 @@ describe('signing in', () => {
 		await home.remove();
 	});
 
-	test('starts signed out without blocking initialize, offering connect', async () => {
+	test('starts signed out without blocking initialize, offering connect and attach_file', async () => {
 		proxy = await connectProxy({ url: fake.url, home: home.home });
 		assert.match(proxy.client.getInstructions(), /Call the `connect` tool/);
 		const { tools } = await proxy.client.listTools();
-		assert.deepEqual(names(tools), ['connect']);
+		assert.deepEqual(names(tools), ['connect', 'attach_file']);
 		assert.equal(fake.state.authorizeRequests.length, 0, 'no browser before connect is called');
 		assert.match(proxy.stderr(), /Not signed in to TestWise at http:\/\/127\.0\.0\.1:\d+\/mcp/);
 
 		const call = await proxy.client.callTool({ name: 'get_updates', arguments: {} });
 		assert.equal(call.isError, true);
 		assert.match(text(call), /Call the connect tool to sign in/);
+		const attach = await proxy.client.callTool({ name: 'attach_file', arguments: { key: 'LAR-41', path: '/tmp/x.png' } });
+		assert.equal(attach.isError, true);
+		assert.match(text(attach), /Not signed in/);
 	});
 
 	test('connect signs in through the browser, caches the credentials and switches to the remote tools', async () => {
@@ -61,7 +64,7 @@ describe('signing in', () => {
 
 		const { tools } = await proxy.client.listTools();
 		assert.deepEqual(names(tools), [
-			'whoami', 'get_updates', 'publish_release', 'get_item', 'request_retest', 'create_attachment_upload', 'complete_attachment_upload',
+			'whoami', 'get_updates', 'publish_release', 'get_item', 'request_retest', 'create_attachment_upload', 'complete_attachment_upload', 'attach_file',
 		]);
 		const updates = await proxy.client.callTool({ name: 'get_updates', arguments: {} });
 		assert.match(text(updates), /^1 new event: LAR-41 was filed by QA\./);
@@ -172,7 +175,7 @@ describe('cached credentials', () => {
 		assert.match(text(result), /sign-in has expired or was revoked\. Call the connect tool/);
 		await changed;
 		const { tools } = await proxy.client.listTools();
-		assert.deepEqual(names(tools), ['connect']);
+		assert.deepEqual(names(tools), ['connect', 'attach_file']);
 		assert.equal(fake.state.authorizeRequests.length, 0);
 		assert.equal((await home.readCredentials()).servers[`${fake.url}/mcp`], undefined, 'the dead credentials are removed');
 
@@ -185,7 +188,7 @@ describe('cached credentials', () => {
 		await home.writeCredentials('{ not json');
 		proxy = await connectProxy({ url: fake.url, home: home.home });
 		assert.match(proxy.stderr(), /credentials\.json is not valid credentials JSON and was ignored/);
-		assert.deepEqual(names((await proxy.client.listTools()).tools), ['connect']);
+		assert.deepEqual(names((await proxy.client.listTools()).tools), ['connect', 'attach_file']);
 		const result = await proxy.client.callTool({ name: 'connect', arguments: {} });
 		assert.match(text(result), /^Connected to TestWise\./);
 		assert.ok((await home.readCredentials()).servers[`${fake.url}/mcp`].tokens.access_token);

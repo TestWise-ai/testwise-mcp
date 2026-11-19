@@ -41,12 +41,13 @@ describe('proxy over stdio', () => {
 		assert.equal(proxy.client.getServerCapabilities().tools.listChanged, true);
 	});
 
-	test('lists the remote tools', async () => {
+	test('lists the remote tools plus attach_file', async () => {
 		const { tools } = await proxy.client.listTools();
 		assert.deepEqual(tools.map((tool) => tool.name), [
-			'whoami', 'get_updates', 'publish_release', 'get_item', 'request_retest', 'create_attachment_upload', 'complete_attachment_upload',
+			'whoami', 'get_updates', 'publish_release', 'get_item', 'request_retest', 'create_attachment_upload', 'complete_attachment_upload', 'attach_file',
 		]);
 		assert.deepEqual(tools.find((tool) => tool.name === 'request_retest').inputSchema.required, ['key', 'build']);
+		assert.deepEqual(tools.find((tool) => tool.name === 'attach_file').inputSchema.required, ['key', 'path']);
 	});
 
 	test('discovers tools added to the hosted server without a restart', async () => {
@@ -110,7 +111,7 @@ describe('proxy over stdio', () => {
 	});
 
 	test('never writes the token to stderr', () => {
-		assert.match(proxy.stderr(), /connected to http:\/\/127\.0\.0\.1:\d+\/mcp: 7 TestWise tools\./);
+		assert.match(proxy.stderr(), /connected to http:\/\/127\.0\.0\.1:\d+\/mcp: 7 TestWise tools, plus attach_file\./);
 		assert.ok(!proxy.stderr().includes(accessToken));
 	});
 });
@@ -139,6 +140,7 @@ describe('hosted server goes down mid-session', () => {
 	test('tools/list falls back to the last known tools', async () => {
 		const { tools } = await proxy.client.listTools();
 		assert.ok(tools.some((tool) => tool.name === 'get_updates'));
+		assert.ok(tools.some((tool) => tool.name === 'attach_file'));
 		assert.match(proxy.stderr(), /Could not refresh the tool list/);
 	});
 });
