@@ -125,8 +125,8 @@ export function cleanText(value, max = 200) {
 	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-function plain(res, status, message) {
-	res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }).end(message);
+function plain(res, status, message, headers = {}) {
+	res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...headers }).end(message);
 }
 
 // One-shot loopback listener for the authorization redirect (RFC 8252): 127.0.0.1, a random port, path /callback.
@@ -139,9 +139,19 @@ export async function startLoopback({ expectedState }) {
 	});
 	let done = false;
 	const server = http.createServer((req, res) => {
-		const url = new URL(req.url, 'http://127.0.0.1');
+		let url;
+		try {
+			url = new URL(req.url, 'http://127.0.0.1');
+		} catch {
+			plain(res, 400, 'Bad request');
+			return;
+		}
 		if (url.pathname !== '/callback' || done) {
 			plain(res, 404, 'Not found');
+			return;
+		}
+		if (req.method !== 'GET') {
+			plain(res, 405, 'Method not allowed', { Allow: 'GET' });
 			return;
 		}
 		const params = url.searchParams;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
+import net from 'node:net';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { FAKE_INSTRUCTIONS, startFakeTestwise } from '../support/fake-testwise.js';
 import { childEnv, connectProxy, makeHome, runBinary } from '../support/proxy-client.js';
@@ -165,6 +166,29 @@ describe('the sign-in callback', () => {
 		await changed;
 		assert.match(text(await proxy.client.callTool({ name: 'connect', arguments: {} })), /^Connected to TestWise\./);
 		assert.deepEqual(fake.state.tokenRequests.map((request) => request.grantType), ['authorization_code'], 'the attacker code was never exchanged');
+	});
+
+	test('a malformed request or another method gets an error answer, and the server keeps running', { timeout: 15_000 }, async () => {
+		const { callback, state, link } = await pendingSignIn();
+		const { port } = new URL(callback);
+		const raw = await new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1', () => socket.end('GET // HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'));
+			let answer = '';
+			socket.on('data', (chunk) => {
+				answer += chunk;
+			});
+			socket.on('end', () => resolve(answer));
+			socket.on('error', reject);
+		});
+		assert.match(raw, /^HTTP\/1\.1 400 /);
+		const posted = await fetch(`${callback}?error=access_denied&state=${state}`, { method: 'POST' });
+		assert.equal(posted.status, 405);
+		assert.equal(posted.headers.get('allow'), 'GET');
+
+		const changed = proxy.nextListChanged();
+		await approve(link);
+		await changed;
+		assert.ok(names((await proxy.client.listTools()).tools).includes('get_updates'));
 	});
 
 	test('an error from the authorization server is shown without control characters, and capped', async () => {
