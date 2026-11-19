@@ -118,6 +118,86 @@ describe('signing in', () => {
 	});
 });
 
+describe('the sign-in callback', () => {
+	let fake;
+	let home;
+	let proxy;
+
+	beforeEach(async () => {
+		fake = await startFakeTestwise();
+		home = await makeHome();
+	});
+
+	afterEach(async () => {
+		await proxy?.close();
+		proxy = null;
+		await fake.close();
+		await home.remove();
+	});
+
+	async function pendingSignIn() {
+		fake.state.authorizeMode = 'hold';
+		proxy = await connectProxy({ url: fake.url, home: home.home });
+		const pending = await proxy.client.callTool({ name: 'connect', arguments: { waitSeconds: 1 } });
+		assert.match(text(pending), /^Waiting for the user to sign in/);
+		while (fake.state.authorizeRequests.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+		const [authorize] = fake.state.authorizeRequests;
+		return { callback: authorize.redirect_uri, state: authorize.state, link: /\n(http:\/\/127\.0\.0\.1:\d+\/oauth\/authorize\?\S+)\n/.exec(text(pending))[1] };
+	}
+
+	async function approve(link) {
+		fake.state.authorizeMode = 'approve';
+		const approved = await fetch(link, { redirect: 'manual' });
+		return fetch(approved.headers.get('location'));
+	}
+
+	test('requests without the sign-in\'s state are refused and do not end the sign-in', { timeout: 15_000 }, async () => {
+		const { callback, link } = await pendingSignIn();
+		for (const query of ['code=attacker-code&state=wrong', 'code=attacker-code', 'error=access_denied', 'error=access_denied&state=wrong', 'state=']) {
+			const response = await fetch(`${callback}?${query}`);
+			assert.equal(response.status, 400, query);
+			await response.body?.cancel();
+		}
+
+		const changed = proxy.nextListChanged();
+		const landed = await approve(link);
+		assert.equal(landed.status, 200);
+		await changed;
+		assert.match(text(await proxy.client.callTool({ name: 'connect', arguments: {} })), /^Connected to TestWise\./);
+		assert.deepEqual(fake.state.tokenRequests.map((request) => request.grantType), ['authorization_code'], 'the attacker code was never exchanged');
+	});
+
+	test('an error from the authorization server is shown without control characters, and capped', async () => {
+		fake.state.authorizeMode = 'deny';
+		fake.state.denyError = 'server_error';
+		fake.state.denyDescription = `Denied\u001b]0;owned\u0007\u001b[2J\r\n${'x'.repeat(500)}`;
+		proxy = await connectProxy({ url: fake.url, home: home.home });
+		const result = await proxy.client.callTool({ name: 'connect', arguments: {} });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /^Could not connect to TestWise: Sign-in failed: Denied/);
+		assert.doesNotMatch(text(result), /[\u0000-\u001f\u007f-\u009f]/);
+		assert.ok(text(result).length < 300, `capped: ${text(result).length}`);
+	});
+
+	test('a callback without iss is refused when the server advertises it', async () => {
+		fake.state.callbackIss = null;
+		proxy = await connectProxy({ url: fake.url, home: home.home });
+		const result = await proxy.client.callTool({ name: 'connect', arguments: {} });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /did not say which authorization server it came from/);
+		assert.equal(fake.state.tokenRequests.length, 0, 'the code was not exchanged');
+	});
+
+	test('a callback from another authorization server is refused', async () => {
+		fake.state.callbackIss = 'https://other-issuer.example';
+		proxy = await connectProxy({ url: fake.url, home: home.home });
+		const result = await proxy.client.callTool({ name: 'connect', arguments: {} });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /came back from a different authorization server/);
+		assert.equal(fake.state.tokenRequests.length, 0);
+	});
+});
+
 describe('cached credentials', () => {
 	let fake;
 	let home;

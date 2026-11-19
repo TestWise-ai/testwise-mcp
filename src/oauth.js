@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import { registerSecret } from './redact.js';
 
@@ -110,8 +110,29 @@ function page(title, message) {
 		+ `<body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
 }
 
+function sameSecret(a, b) {
+	const x = Buffer.from(String(a));
+	const y = Buffer.from(String(b));
+	return x.length === y.length && timingSafeEqual(x, y);
+}
+
+const ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+const UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g;
+
+// Text that arrived in the callback URL, made safe to print: no control or bidi characters, at most max characters.
+export function cleanText(value, max = 200) {
+	const text = String(value ?? '').replace(UNSAFE_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function plain(res, status, message) {
+	res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }).end(message);
+}
+
 // One-shot loopback listener for the authorization redirect (RFC 8252): 127.0.0.1, a random port, path /callback.
-export async function startLoopback() {
+// Only a redirect carrying this sign-in's state (expectedState()) settles it; anything else is answered 400 and the
+// listener keeps waiting, so another page cannot end or hijack the sign-in.
+export async function startLoopback({ expectedState }) {
 	let settle;
 	const result = new Promise((resolve) => {
 		settle = resolve;
@@ -120,13 +141,20 @@ export async function startLoopback() {
 	const server = http.createServer((req, res) => {
 		const url = new URL(req.url, 'http://127.0.0.1');
 		if (url.pathname !== '/callback' || done) {
-			res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
+			plain(res, 404, 'Not found');
 			return;
 		}
-		const code = url.searchParams.get('code');
-		const error = url.searchParams.get('error');
+		const params = url.searchParams;
+		const expected = expectedState();
+		const state = params.get('state');
+		if (!expected || !state || !sameSecret(state, expected)) {
+			plain(res, 400, 'This link does not belong to the TestWise sign-in in progress.');
+			return;
+		}
+		const code = params.get('code');
+		const error = params.get('error');
 		if (!code && !error) {
-			res.writeHead(400, { 'Content-Type': 'text/plain' }).end('Missing code');
+			plain(res, 400, 'Missing code');
 			return;
 		}
 		done = true;
@@ -135,13 +163,12 @@ export async function startLoopback() {
 		res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
 		res.end(ok
 			? page('Signed in to TestWise', 'You can close this tab.')
-			: page('Sign-in did not finish', url.searchParams.get('error_description') || error));
+			: page('Sign-in did not finish', 'Return to your coding agent and try again.'));
 		settle({
-			code,
-			error,
-			errorDescription: url.searchParams.get('error_description'),
-			state: url.searchParams.get('state'),
-			iss: url.searchParams.get('iss'),
+			code: ok ? code : null,
+			error: error === null ? null : ERROR_CODE.test(error) ? error : 'invalid_error',
+			errorDescription: cleanText(params.get('error_description')) || null,
+			iss: params.get('iss'),
 		});
 	});
 	await new Promise((resolve, reject) => {

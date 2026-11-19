@@ -119,14 +119,15 @@ export class Session extends EventEmitter {
 	}
 
 	async runSignIn(attempt) {
-		const loopback = await startLoopback();
+		let provider;
+		const loopback = await startLoopback({ expectedState: () => provider?.expectedState });
 		const expiry = setTimeout(() => loopback.close(), SIGN_IN_LIFETIME_MS);
 		expiry.unref();
 		attempt.close = () => {
 			clearTimeout(expiry);
 			loopback.close();
 		};
-		const provider = new TestwiseOAuthProvider({
+		provider = new TestwiseOAuthProvider({
 			store: this.store,
 			serverKey: this.serverKey,
 			interactive: true,
@@ -159,17 +160,19 @@ export class Session extends EventEmitter {
 		});
 		const callback = await Promise.race([loopback.result, expired]).finally(() => clearTimeout(timer));
 		if (callback.error === 'timeout') throw new RemoteError('auth', 'The sign-in link expired. Call connect again for a new one.');
+		// The listener has already matched the state. RFC 9207: the response must name the authorization server that
+		// this sign-in started at, and must name one at all when that server says it always does.
+		const metadata = provider.discoveryState()?.authorizationServerMetadata;
+		if (!callback.iss && metadata?.authorization_response_iss_parameter_supported === true) {
+			throw new RemoteError('auth', 'Sign-in failed: the browser came back, but did not say which authorization server it came from.');
+		}
+		if (callback.iss && metadata?.issuer && callback.iss !== metadata.issuer) {
+			throw new RemoteError('auth', 'Sign-in failed: the browser came back from a different authorization server.');
+		}
 		if (callback.error) {
 			throw new RemoteError('auth', callback.error === 'access_denied'
 				? 'Sign-in was declined in the browser.'
 				: `Sign-in failed: ${callback.errorDescription || callback.error}.`);
-		}
-		if (!callback.state || callback.state !== provider.expectedState) {
-			throw new RemoteError('auth', 'Sign-in failed: the browser came back with a state that does not match this sign-in.');
-		}
-		const issuer = provider.discoveryState()?.authorizationServerMetadata?.issuer;
-		if (callback.iss && issuer && callback.iss !== issuer) {
-			throw new RemoteError('auth', 'Sign-in failed: the browser came back from a different authorization server.');
 		}
 		try {
 			await auth(provider, { serverUrl: this.endpoint, authorizationCode: callback.code });

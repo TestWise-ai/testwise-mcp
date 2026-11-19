@@ -176,7 +176,7 @@ function handleAuthorize(req, res, state, url) {
 	}
 	const back = new URL(redirectUri);
 	back.searchParams.set('state', params.get('state') ?? '');
-	back.searchParams.set('iss', state.baseUrl);
+	if (state.callbackIss !== null) back.searchParams.set('iss', state.callbackIss ?? state.baseUrl);
 	const valid = params.get('response_type') === 'code'
 		&& params.get('code_challenge_method') === 'S256'
 		&& params.get('code_challenge')
@@ -188,7 +188,8 @@ function handleAuthorize(req, res, state, url) {
 		res.writeHead(200, { 'Content-Type': 'text/html' }).end('<p>Choose a project…</p>');
 		return;
 	} else if (state.authorizeMode === 'deny') {
-		back.searchParams.set('error', 'access_denied');
+		back.searchParams.set('error', state.denyError ?? 'access_denied');
+		if (state.denyDescription) back.searchParams.set('error_description', state.denyDescription);
 	} else {
 		const code = secret('code');
 		state.codes.set(code, {
@@ -334,6 +335,7 @@ function route(req, res, state) {
 			token_endpoint_auth_methods_supported: ['none'],
 			scopes_supported: ['handoff'],
 			client_id_metadata_document_supported: true,
+			authorization_response_iss_parameter_supported: true,
 		});
 	}
 	if (pathname === '/oauth/authorize' && req.method === 'GET') return handleAuthorize(req, res, state, url);
@@ -356,6 +358,10 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		tokenDelayMs: 0,
 		reuseDetections: [],
 		authorizeMode: 'approve',
+		// The iss sent back to the callback: the issuer by default, another value, or null to leave it out.
+		callbackIss: undefined,
+		denyError: null,
+		denyDescription: null,
 		failRefresh: false,
 		tools: new Map(),
 		calls: [],
