@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import {
+	chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -56,16 +58,25 @@ export class CredentialStore {
 
 	readAll() {
 		let text;
+		let fd;
 		try {
-			if (POSIX && (statSync(this.file).mode & 0o077) !== 0) {
-				chmodSync(this.file, 0o600);
+			// Only a regular file is read: a symlink here is not followed (nor its target chmodded).
+			if (!lstatSync(this.file).isFile()) {
+				this.warn(`${this.file} is not a regular file, so it was ignored; signing in again replaces it.`);
+				return { version: 1, servers: {} };
+			}
+			fd = openSync(this.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+			if (POSIX && (fstatSync(fd).mode & 0o077) !== 0) {
+				fchmodSync(fd, 0o600);
 				this.warn(`${this.file} was readable by other users; its permissions are now 0600.`);
 			}
-			text = readFileSync(this.file, 'utf8');
+			text = readFileSync(fd, 'utf8');
 		} catch (error) {
 			if (error.code === 'ENOENT') return { version: 1, servers: {} };
 			this.warn(`${this.file} could not be read (${error.code ?? error.message}); sign in again to replace it.`);
 			return { version: 1, servers: {} };
+		} finally {
+			if (fd !== undefined) closeSync(fd);
 		}
 		try {
 			const data = JSON.parse(text);
@@ -149,14 +160,22 @@ export class CredentialStore {
 		return info?.host === os.hostname() && Number.isInteger(info?.pid) && processIsGone(info.pid);
 	}
 
+	// Writes a new file under an unguessable name, created exclusively (never through an existing file or link),
+	// flushes it to disk, then renames it over credentials.json, replacing the file (or a link) in one step.
 	writeAll(data) {
 		this.ensureDir();
-		const temp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
+		const temp = `${this.file}.${randomBytes(8).toString('hex')}.tmp`;
+		let fd;
 		try {
-			writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+			fd = openSync(temp, 'wx', 0o600);
+			writeSync(fd, `${JSON.stringify(data, null, 2)}\n`);
+			fsyncSync(fd);
+			closeSync(fd);
+			fd = undefined;
 			if (POSIX) chmodSync(temp, 0o600);
 			renameSync(temp, this.file);
 		} catch (error) {
+			if (fd !== undefined) closeSync(fd);
 			rmSync(temp, { force: true });
 			throw error;
 		}

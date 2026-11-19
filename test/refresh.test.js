@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
@@ -147,6 +147,25 @@ describe('credentials store', () => {
 		provider.tokens();
 		await provider.invalidateCredentials('tokens');
 		assert.equal(mine.get(key), null, 'the pair that failed is deleted');
+	});
+
+	test('a credentials file that is a symlink is neither followed nor chmodded, and a save replaces the link', { skip: process.platform === 'win32' }, async () => {
+		const elsewhere = path.join(home.home, 'shared-notes.json');
+		await writeFile(elsewhere, JSON.stringify({ version: 1, servers: { 'https://testwise.example/mcp': { tokens: tokenPair('planted') } } }), { mode: 0o644 });
+		await mkdir(path.join(home.home, '.testwise'), { recursive: true, mode: 0o700 });
+		await symlink(elsewhere, home.credentialsFile);
+
+		const store = new CredentialStore({ homeDir: home.home });
+		assert.equal(store.get('https://testwise.example/mcp'), null, 'the linked file is not read');
+		assert.match(store.takeWarnings().join('\n'), /credentials\.json is not a regular file/);
+		assert.equal((await stat(elsewhere)).mode & 0o777, 0o644, 'the link target keeps its permissions');
+
+		await store.saveTokens('https://testwise.example/mcp', tokenPair('mine'));
+		const saved = await lstat(home.credentialsFile);
+		assert.ok(saved.isFile(), 'the link was replaced by a regular file');
+		assert.equal(saved.mode & 0o777, 0o600);
+		assert.match(await readFile(elsewhere, 'utf8'), /planted/, 'the link target is untouched');
+		assert.deepEqual((await readdir(path.join(home.home, '.testwise'))).filter((name) => name.endsWith('.tmp')), [], 'no temporary file is left');
 	});
 
 	test('the credentials lock serializes writers and recovers from a stale lock', async () => {
