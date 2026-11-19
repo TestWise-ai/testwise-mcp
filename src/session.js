@@ -40,6 +40,7 @@ export class Session extends EventEmitter {
 		this.tools = [];
 		this.toolsListedAt = 0;
 		this.toolsRefreshMs = toolsRefreshMs;
+		this.relisting = null;
 		this.signIn = null;
 		this.connecting = null;
 		this.signInFetch = signInFetch(endpoint);
@@ -115,12 +116,20 @@ export class Session extends EventEmitter {
 		}
 	}
 
-	// Fetches the tool list again, and tells the client (through 'change') if it differs.
-	async relistTools(remote = this.remote) {
-		if (!remote || this.remote !== remote) return;
-		const before = JSON.stringify(this.tools);
-		await this.refreshTools();
-		if (this.remote === remote && JSON.stringify(this.tools) !== before) this.emit('change');
+	// Fetches the tool list again, and tells the client (through 'change') if it differs. Callers at the same time
+	// share one request.
+	relistTools(remote = this.remote) {
+		if (!remote || this.remote !== remote) return Promise.resolve();
+		if (!this.relisting) {
+			this.relisting = (async () => {
+				const before = JSON.stringify(this.tools);
+				await this.refreshTools();
+				if (this.remote === remote && JSON.stringify(this.tools) !== before) this.emit('change');
+			})().finally(() => {
+				this.relisting = null;
+			});
+		}
+		return this.relisting;
 	}
 
 	// TestWise said its tool list changed (only a server that can push says so).
