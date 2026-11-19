@@ -4,7 +4,7 @@ import { open, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
-import { isLoopbackHost } from './config.js';
+import { isSecureUrl } from './config.js';
 import { forgetSecret, redact, registerSecret } from './redact.js';
 import { readAttachment, readUploadTicket, resultText } from './tool-result.js';
 
@@ -179,15 +179,35 @@ async function callStep(remote, toolName, args) {
 	}
 }
 
-function checkUploadUrl(uploadUrl) {
-	let url;
-	try {
-		url = new URL(uploadUrl);
-	} catch {
-		return 'TestWise returned an upload link that is not a valid URL.';
-	}
-	if (url.protocol === 'https:' || (url.protocol === 'http:' && isLoopbackHost(url.hostname))) return null;
+// Plain http only to loopback, and only when TestWise itself runs there: otherwise a ticket could aim the upload at a
+// service on this machine.
+function checkUploadUrl(uploadUrl, endpoint) {
+	if (!URL.canParse(uploadUrl)) return 'TestWise returned an upload link that is not a valid URL.';
+	if (isSecureUrl(uploadUrl, endpoint)) return null;
 	return 'TestWise returned an upload link that is not https, so the file was not sent.';
+}
+
+// Headers a storage service has no business asking for: credentials, and hop-by-hop headers that only the HTTP
+// client itself may set.
+const REFUSED_HEADERS = new Set([
+	'host', 'authorization', 'cookie', 'proxy-authorization', 'proxy-authenticate',
+	'connection', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade',
+]);
+
+function uploadHeaders(ticket, contentType) {
+	const headers = new Headers({ 'Content-Type': contentType });
+	for (const [name, value] of Object.entries(ticket.headers)) {
+		if (REFUSED_HEADERS.has(name.toLowerCase())) {
+			return { error: `TestWise asked for a ${name} header on the upload, which attach_file never sends, so the file was not sent.` };
+		}
+		try {
+			headers.set(name, value);
+		} catch {
+			// The header's text is not repeated: it may hold signed values.
+			return { error: 'TestWise returned upload headers that are not valid HTTP headers, so the file was not sent.' };
+		}
+	}
+	return { headers };
 }
 
 function networkReason(error) {
@@ -205,9 +225,7 @@ async function storageErrorCode(response) {
 	}
 }
 
-async function upload({ ticket, bytes, contentType, fetchImpl }) {
-	const headers = new Headers({ 'Content-Type': contentType });
-	for (const [name, value] of Object.entries(ticket.headers)) headers.set(name, value);
+async function upload({ ticket, bytes, headers, fetchImpl }) {
 	let response;
 	try {
 		response = await fetchImpl(ticket.uploadUrl, {
@@ -263,13 +281,15 @@ export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = 
 	if (!['PUT', 'POST'].includes(ticket.method)) {
 		return failure(`create_attachment_upload asked for an HTTP ${ticket.method} upload, which attach_file does not support.`);
 	}
-	const badUrl = checkUploadUrl(ticket.uploadUrl);
+	const badUrl = checkUploadUrl(ticket.uploadUrl, remote.endpoint);
 	if (badUrl) return failure(`${badUrl} (${described})`);
+	const { headers, error: badHeaders } = uploadHeaders(ticket, contentType);
+	if (badHeaders) return failure(`${badHeaders} (${described})`);
 
 	registerSecret(ticket.uploadUrl);
 	let uploaded;
 	try {
-		uploaded = await upload({ ticket, bytes, contentType, fetchImpl });
+		uploaded = await upload({ ticket, bytes, headers, fetchImpl });
 	} finally {
 		forgetSecret(ticket.uploadUrl);
 	}
