@@ -2,7 +2,7 @@ import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import { CallToolResultSchema, ErrorCode, ListToolsResultSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolResultSchema, ErrorCode, ListToolsResultSchema, McpError, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { redact, redactDeep } from './redact.js';
 
 const CONNECT_TIMEOUT_MS = 30_000;
@@ -98,11 +98,12 @@ export function toRemoteError(error, endpoint) {
 }
 
 export class Remote {
-	constructor({ endpoint, authProvider, clientInfo, fetch }) {
+	constructor({ endpoint, authProvider, clientInfo, fetch, onToolListChanged }) {
 		this.endpoint = endpoint;
 		this.authProvider = authProvider;
 		this.clientInfo = clientInfo;
 		this.fetch = fetch;
+		this.onToolListChanged = onToolListChanged;
 		this.client = null;
 	}
 
@@ -110,6 +111,7 @@ export class Remote {
 		const client = new Client(this.clientInfo, { capabilities: {} });
 		// Failures surface on the request that caused them, so the transport's error channel stays quiet.
 		client.onerror = () => {};
+		client.setNotificationHandler(ToolListChangedNotificationSchema, () => this.onToolListChanged?.());
 		const transport = new StreamableHTTPClientTransport(this.endpoint, { authProvider: this.authProvider, fetch: this.fetch });
 		try {
 			await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });

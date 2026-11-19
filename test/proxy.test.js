@@ -181,6 +181,38 @@ describe('cancellation and progress', () => {
 	});
 });
 
+describe('tool list changes at TestWise', () => {
+	let fake;
+	let home;
+	let proxy;
+
+	after(async () => {
+		await proxy?.close();
+		await fake?.close();
+		await home?.remove();
+	});
+
+	test('reach the client as notifications/tools/list_changed', async () => {
+		fake = await startFakeTestwise();
+		fake.state.pushNotifications = true;
+		home = await makeHome();
+		await home.writeCredentials(fake.mintCredentials());
+		proxy = await connectProxy({ url: fake.url, home: home.home });
+		await waitFor(() => fake.state.streams.size > 0, 'the event stream');
+
+		const changed = proxy.nextListChanged();
+		fake.addTool({ name: 'list_releases', description: 'Releases, newest first.', inputSchema: { type: 'object', properties: {} } }, () => ({
+			content: [{ type: 'text', text: '0 releases' }],
+		}));
+		fake.notifyToolsChanged();
+		await Promise.race([changed, new Promise((resolve, reject) => {
+			setTimeout(() => reject(new Error('no notifications/tools/list_changed')), 5000);
+		})]);
+		const { tools } = await proxy.client.listTools();
+		assert.ok(tools.some((tool) => tool.name === 'list_releases'));
+	});
+});
+
 describe('hosted server goes down mid-session', () => {
 	let fake;
 	let home;

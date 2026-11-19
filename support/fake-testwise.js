@@ -260,7 +260,8 @@ function challenge(res, state, tokenSent) {
 async function handleMcp(req, res, state) {
 	const authorization = req.headers.authorization ?? '';
 	state.requests.push({ method: req.method, path: '/mcp', authorization });
-	if (req.method !== 'POST') {
+	const streaming = req.method === 'GET' && state.pushNotifications;
+	if (req.method !== 'POST' && !streaming) {
 		res.writeHead(405, { Allow: 'POST' }).end();
 		return;
 	}
@@ -271,9 +272,18 @@ async function handleMcp(req, res, state) {
 		challenge(res, state, Boolean(token));
 		return;
 	}
+	if (streaming) {
+		// The standalone event stream a server uses to push notifications (see notifyToolsChanged).
+		res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
+		res.flushHeaders();
+		state.streams.add(res);
+		res.on('close', () => state.streams.delete(res));
+		return;
+	}
 	const body = JSON.parse((await readBody(req)).toString('utf8'));
 	state.messages.push(body);
-	const server = new Server({ name: 'testwise', version: '0.0.0-test' }, { capabilities: { tools: {} }, instructions: state.instructions });
+	const capabilities = { tools: state.pushNotifications ? { listChanged: true } : {} };
+	const server = new Server({ name: 'testwise', version: '0.0.0-test' }, { capabilities, instructions: state.instructions });
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...state.tools.values()].map((tool) => tool.definition) }));
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args = {} } = request.params;
@@ -380,6 +390,9 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		// Every JSON-RPC message an authorized client posted to /mcp.
 		messages: [],
 		streamResponses: false,
+		// With pushNotifications, GET /mcp opens an event stream and the server says its tool list can change.
+		pushNotifications: false,
+		streams: new Set(),
 		discoveryRequests: [],
 		authorizeRequests: [],
 		tokenRequests: [],
@@ -409,6 +422,11 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		state,
 		addTool(definition, run) {
 			state.tools.set(definition.name, { definition, run });
+		},
+		// Sends notifications/tools/list_changed on every open event stream.
+		notifyToolsChanged() {
+			const event = `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })}\n\n`;
+			for (const stream of state.streams) stream.write(event);
 		},
 		// Credentials as `testwise-mcp login` would have saved them, for tests that start signed in.
 		mintCredentials() {

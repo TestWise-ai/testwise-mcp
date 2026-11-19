@@ -57,7 +57,13 @@ export class Session extends EventEmitter {
 	async openRemote() {
 		if (!this.hasCredentials()) return false;
 		const provider = new TestwiseOAuthProvider({ store: this.store, serverKey: this.serverKey, endpoint: this.endpoint });
-		const remote = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo, fetch: this.fetch });
+		const remote = new Remote({
+			endpoint: this.endpoint,
+			authProvider: provider,
+			clientInfo: this.clientInfo,
+			fetch: this.fetch,
+			onToolListChanged: () => this.remoteToolsChanged(remote),
+		});
 		try {
 			await remote.connect();
 			const tools = await remote.listTools();
@@ -93,6 +99,14 @@ export class Session extends EventEmitter {
 			}
 			this.log?.(`Could not refresh the tool list, so the last known list is used. ${error.message}`);
 		}
+	}
+
+	// TestWise said its tool list changed: refresh it, and tell the client if it really did.
+	async remoteToolsChanged(remote) {
+		if (this.remote !== remote) return;
+		const before = JSON.stringify(this.tools);
+		await this.refreshTools();
+		if (this.remote === remote && JSON.stringify(this.tools) !== before) this.emit('change');
 	}
 
 	async callTool(name, args, options) {
