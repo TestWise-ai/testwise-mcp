@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
@@ -8,6 +8,30 @@ import { CredentialStore } from '../src/credentials.js';
 import { TestwiseOAuthProvider } from '../src/oauth.js';
 import { FAKE_INSTRUCTIONS, startFakeTestwise } from '../support/fake-testwise.js';
 import { connectProxy, makeHome } from '../support/proxy-client.js';
+
+const CONTENDER = new URL('../support/lock-contender.js', import.meta.url).pathname;
+
+function run(args) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+		let stderr = '';
+		child.stderr.on('data', (chunk) => {
+			stderr += chunk;
+		});
+		child.on('error', reject);
+		child.on('exit', (code) => (code === 0 ? resolve(child.pid) : reject(new Error(`exit ${code}: ${stderr}`))));
+	});
+}
+
+// The pid of a process that has exited, for a lock its holder left behind.
+function deadPid() {
+	return run(['-e', '']);
+}
+
+async function writeDeadLock(homeDir) {
+	await mkdir(path.join(homeDir, '.testwise'), { recursive: true, mode: 0o700 });
+	await writeFile(path.join(homeDir, '.testwise', 'credentials.lock'), JSON.stringify({ pid: await deadPid(), host: os.hostname(), at: Date.now() }));
+}
 
 function text(result) {
 	return result.content.map((block) => block.text).join('\n');
@@ -82,6 +106,32 @@ describe('refreshing at expiry', () => {
 		assert.equal(fake.refreshCount(), 1, 'one refresh across the processes');
 		assert.deepEqual(fake.state.reuseDetections, []);
 		assert.ok(fake.isLive(await savedTokens()));
+	});
+
+	test('servers starting at once over a lock left by a dead process never revoke the sign-in (strict server)', { timeout: 120_000 }, async () => {
+		const round = async () => {
+			const roundFake = await startFakeTestwise({ refreshReuse: 'strict' });
+			const roundHome = await makeHome();
+			const started = [];
+			try {
+				await roundHome.writeCredentials(roundFake.mintCredentials());
+				roundFake.expireAccessTokens();
+				roundFake.state.tokenDelayMs = 50;
+				await writeDeadLock(roundHome.home);
+				started.push(...await Promise.all(Array.from({ length: 6 }, () => connectProxy({ url: roundFake.url, home: roundHome.home }))));
+				for (const proxy of started) {
+					const result = await proxy.client.callTool({ name: 'whoami', arguments: {} });
+					assert.equal(result.isError, undefined, `${text(result)}\n${proxy.stderr()}`);
+				}
+				assert.deepEqual(roundFake.state.reuseDetections, []);
+				assert.equal(roundFake.refreshCount(), 1);
+			} finally {
+				for (const proxy of started) await proxy.close();
+				await roundFake.close();
+				await roundHome.remove();
+			}
+		};
+		for (let batch = 0; batch < 6; batch += 1) await Promise.all([0, 1, 2, 3, 4].map(round));
 	});
 
 	test('an access token about to expire is renewed before it is sent', async () => {
@@ -186,19 +236,56 @@ describe('credentials store', () => {
 		assert.deepEqual(order, ['a:start', 'a:end', 'b']);
 
 		// A lock left by a process that has exited is taken over at once.
-		const exited = spawn(process.execPath, ['-e', '']);
-		const deadPid = await new Promise((resolve) => {
-			exited.on('exit', () => resolve(exited.pid));
-		});
-		await mkdir(path.join(home.home, '.testwise'), { recursive: true });
+		await writeDeadLock(home.home);
 		const lockFile = path.join(home.home, '.testwise', 'credentials.lock');
-		await writeFile(lockFile, JSON.stringify({ pid: deadPid, host: os.hostname(), at: Date.now() }));
 		const started = Date.now();
 		assert.equal(await store.withLock(async () => 'taken'), 'taken');
 		assert.ok(Date.now() - started < 2000);
 
 		// So is one older than any refresh could take, whoever holds it.
 		await writeFile(lockFile, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now() - 10 * 60 * 1000 }));
+		const old = new Date(Date.now() - 10 * 60 * 1000);
+		await utimes(lockFile, old, old);
 		assert.equal(await store.withLock(async () => 'taken again'), 'taken again');
+	});
+
+	test('processes taking over a dead process\'s lock never hold it at the same time', { timeout: 120_000 }, async () => {
+		const trial = async () => {
+			const trialHome = await makeHome();
+			try {
+				await writeDeadLock(trialHome.home);
+				const log = path.join(trialHome.home, 'holders.log');
+				const startAt = Date.now() + 400;
+				await Promise.all(Array.from({ length: 8 }, () => run([CONTENDER, trialHome.home, log, String(startAt), '2'])));
+				const lines = (await readFile(log, 'utf8')).trim().split('\n');
+				assert.equal(lines.length, 16);
+				lines.forEach((line, index) => assert.ok(line.startsWith(index % 2 === 0 ? 'in ' : 'out '), `two holders at once:\n${lines.join('\n')}`));
+			} finally {
+				await trialHome.remove();
+			}
+		};
+		for (let batch = 0; batch < 10; batch += 1) await Promise.all([0, 1, 2, 3, 4].map(trial));
+	});
+
+	test('a lock is stamped when it is taken, and kept fresh while it is held', async () => {
+		const store = new CredentialStore({ homeDir: home.home, heartbeatMs: 50 });
+		const other = new CredentialStore({ homeDir: home.home });
+		const lockFile = path.join(home.home, '.testwise', 'credentials.lock');
+		let release;
+		const held = store.withLock(() => new Promise((resolve) => {
+			release = resolve;
+		}));
+		while (!release) await new Promise((resolve) => setTimeout(resolve, 5));
+		const created = (await stat(lockFile)).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.ok((await stat(lockFile)).mtimeMs > created, 'the holder touches its lock');
+		// A waiter that has waited a long time must not stamp its own lock with the time it began waiting.
+		const waitedSince = Date.now();
+		const waiting = other.withLock(async () => JSON.parse(await readFile(lockFile, 'utf8')).at);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		release();
+		await held;
+		assert.ok(await waiting >= waitedSince + 300, 'stamped when created, not when the wait began');
+		assert.equal(other.heldLock, null);
 	});
 });
