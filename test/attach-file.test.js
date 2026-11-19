@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
@@ -197,6 +198,56 @@ describe('attach_file', () => {
 			assert.match(text(result), /is a URL scheme\. attach_file reads local files only/);
 		}
 		assert.equal(remote.state.calls.length, 0);
+	});
+
+	test('credentials, keys and secrets are refused, also through symlinks, before TestWise is called', async () => {
+		const secrets = {
+			'.ssh/id_ed25519': 'private key',
+			'.aws/credentials': '[default]',
+			'.config/gcloud/application_default_credentials.json': '{}',
+			'.docker/config.json': '{"auths":{}}',
+			'.npmrc': '//registry.example/:_authToken=x',
+			'.netrc': 'machine example login me password x',
+			'Library/Keychains/login.keychain-db': 'keychain',
+		};
+		for (const [name, content] of Object.entries(secrets)) {
+			await mkdir(path.dirname(path.join(home.home, name)), { recursive: true });
+			await writeFile(path.join(home.home, name), content);
+		}
+		const project = {
+			'.env': 'API_KEY=x', '.env.local': 'API_KEY=x', 'server.pem': 'pem', 'tls.key': 'key', 'id_rsa': 'key', 'build.keychain': 'keychain',
+		};
+		for (const [name, content] of Object.entries(project)) await writeFile(path.join(dir, name), content);
+		await symlink(path.join(home.home, '.testwise', 'credentials.json'), path.join(dir, 'evidence.png'));
+		await symlink(path.join(dir, '.env'), path.join(dir, 'notes.txt'));
+		await symlink(path.join(home.home, '.ssh'), path.join(dir, 'logs'));
+
+		const refused = [
+			'~/.testwise/credentials.json',
+			path.join(home.home, '.testwise', 'credentials.json'),
+			path.join(home.home, '.testwise', '..', '.testwise', 'credentials.json'),
+			...Object.keys(secrets).map((name) => path.join(home.home, name)),
+			...Object.keys(project),
+			'evidence.png',
+			'notes.txt',
+			'logs/id_ed25519',
+		];
+		for (const target of refused) {
+			const result = await attach(proxy, { key: 'LAR-41', path: target });
+			assert.equal(result.isError, true, target);
+			assert.match(text(result), /attach_file never uploads/, target);
+		}
+		assert.equal(remote.state.calls.length, 0, 'TestWise was never asked for an upload');
+		assert.equal(remote.state.uploadRequests.length, 0);
+	});
+
+	test('a FIFO is refused without waiting for a writer', { skip: process.platform === 'win32' }, async () => {
+		const fifo = path.join(dir, 'capture.log');
+		execFileSync('mkfifo', [fifo]);
+		const result = await attach(proxy, { key: 'LAR-41', path: fifo });
+		assert.equal(result.isError, true);
+		assert.equal(text(result), `Not attached: ${fifo} is not a regular file.`);
+		await rm(fifo);
 	});
 
 	test('missing arguments are reported', async () => {

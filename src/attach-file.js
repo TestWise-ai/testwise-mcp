@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { open, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
@@ -60,6 +61,35 @@ export const attachFileTool = {
 	annotations: { title: 'Attach a local file', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 };
 
+// Never uploaded, whatever an agent is asked to do: the TestWise sign-in, and the usual homes of credentials and keys.
+// Matched on the path as given and on the file it resolves to, so a symlink cannot smuggle one out.
+const SECRET_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.config/gcloud', 'Library/Keychains'];
+const SECRET_FILES = ['.docker/config.json'];
+const SECRET_NAMES = [
+	[/^\.env/, '.env*'],
+	[/^\.npmrc$/, '.npmrc'],
+	[/^\.netrc$/, '.netrc'],
+	[/\.pem$/, '*.pem'],
+	[/\.key$/, '*.key'],
+	[/^id_/, 'id_*'],
+	[/\.keychain(?:-db)?$/, 'keychains'],
+];
+
+function isWithin(child, parent) {
+	const relative = path.relative(parent.toLowerCase(), child.toLowerCase());
+	return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+// The denylist rule a path falls under, or null. Compared without case, as macOS and Windows file systems do.
+export function secretRule(filePath, homes) {
+	for (const home of homes) {
+		for (const directory of SECRET_DIRECTORIES) if (isWithin(filePath, path.join(home, directory))) return `~/${directory}`;
+		for (const file of SECRET_FILES) if (filePath.toLowerCase() === path.join(home, file).toLowerCase()) return `~/${file}`;
+	}
+	const name = path.basename(filePath).toLowerCase();
+	return SECRET_NAMES.find(([pattern]) => pattern.test(name))?.[1] ?? null;
+}
+
 export function contentTypeFor(fileName) {
 	return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream';
 }
@@ -86,26 +116,41 @@ export function resolveLocalPath(input, cwd) {
 	return path.resolve(cwd, expanded);
 }
 
-async function readLocalFile(resolved) {
-	let info;
-	try {
-		info = await stat(resolved);
-	} catch (error) {
-		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new AttachError(`there is no file at ${resolved}.`);
-		if (error.code === 'EACCES' || error.code === 'EPERM') throw new AttachError(`${resolved} cannot be read (permission denied).`);
-		throw new AttachError(`${resolved} cannot be read (${error.code ?? error.message}).`);
-	}
-	if (info.isDirectory()) throw new AttachError(`${resolved} is a directory. Pass a single file.`);
-	if (!info.isFile()) throw new AttachError(`${resolved} is not a regular file.`);
-	checkSize(resolved, info.size);
+function unreadable(resolved, error) {
+	if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return new AttachError(`there is no file at ${resolved}.`);
+	if (error.code === 'EACCES' || error.code === 'EPERM') return new AttachError(`${resolved} cannot be read (permission denied).`);
+	return new AttachError(`${resolved} cannot be read (${error.code ?? error.message}).`);
+}
 
-	const handle = await open(resolved, 'r');
+// Non-blocking, so a FIFO put in the file's place cannot stall the read; no symlink is followed at the last step, as
+// the path was already resolved and checked.
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+
+async function readLocalFile(resolved, homeDir) {
+	let real;
 	try {
-		const opened = await handle.stat();
-		if (!opened.isFile()) throw new AttachError(`${resolved} is not a regular file.`);
-		checkSize(resolved, opened.size);
+		real = await realpath(resolved);
+	} catch (error) {
+		throw unreadable(resolved, error);
+	}
+	const homes = [homeDir, await realpath(homeDir).catch(() => homeDir)];
+	const rule = secretRule(resolved, homes) ?? secretRule(real, homes);
+	if (rule) throw new AttachError(`${resolved} is a credentials or key file (${rule}), and attach_file never uploads those.`);
+
+	let handle;
+	try {
+		handle = await open(real, OPEN_FLAGS);
+	} catch (error) {
+		throw unreadable(resolved, error);
+	}
+	try {
+		// Everything is decided on the open handle, so the file cannot be swapped between the check and the read.
+		const info = await handle.stat();
+		if (info.isDirectory()) throw new AttachError(`${resolved} is a directory. Pass a single file.`);
+		if (!info.isFile()) throw new AttachError(`${resolved} is not a regular file.`);
+		checkSize(resolved, info.size);
 		const bytes = await handle.readFile();
-		if (bytes.length !== opened.size) throw new AttachError(`${resolved} changed while it was being read. Try again.`);
+		if (bytes.length !== info.size) throw new AttachError(`${resolved} changed while it was being read. Try again.`);
 		return bytes;
 	} finally {
 		await handle.close();
@@ -183,7 +228,7 @@ async function upload({ ticket, bytes, contentType, fetchImpl }) {
 	return { status: response.status, error: `storage answered HTTP ${response.status}${code ? ` (${code})` : ''}` };
 }
 
-export async function attachFile(args, { remote, cwd = process.cwd(), fetchImpl = globalThis.fetch }) {
+export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = os.homedir(), fetchImpl = globalThis.fetch }) {
 	const key = typeof args?.key === 'string' ? args.key.trim() : '';
 	const filePath = typeof args?.path === 'string' ? args.path : '';
 	if (!key) return failure('"key" is required, for example "LAR-41".');
@@ -194,7 +239,7 @@ export async function attachFile(args, { remote, cwd = process.cwd(), fetchImpl 
 	let bytes;
 	try {
 		resolved = resolveLocalPath(filePath, cwd);
-		bytes = await readLocalFile(resolved);
+		bytes = await readLocalFile(resolved, homeDir);
 	} catch (error) {
 		if (error instanceof AttachError) return failure(error.message);
 		return failure(`${resolved ?? filePath} cannot be read (${error.code ?? error.message}).`);
