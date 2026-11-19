@@ -26,6 +26,15 @@ export async function makeHome() {
 		async readCredentials() {
 			return JSON.parse(await readFile(path.join(home, '.testwise', 'credentials.json'), 'utf8'));
 		},
+		// The URLs the fake browser was asked to open.
+		async openedUrls() {
+			try {
+				return (await readFile(path.join(home, 'opened-urls.log'), 'utf8')).split('\n').filter(Boolean);
+			} catch (error) {
+				if (error.code === 'ENOENT') return [];
+				throw error;
+			}
+		},
 		remove: () => rm(home, { recursive: true, force: true }),
 	};
 }

@@ -1,19 +1,44 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
+import { isSecureUrl } from './config.js';
 import { registerSecret } from './redact.js';
+import { RemoteError } from './remote.js';
 
 export const CLIENT_ID = 'testwise-mcp';
 const PLACEHOLDER_REDIRECT = 'http://127.0.0.1/callback';
+
+// Names a URL without its path or query, for messages.
+function origin(url) {
+	try {
+		const parsed = new URL(url);
+		return parsed.origin === 'null' ? `${parsed.protocol}…` : parsed.origin;
+	} catch {
+		return 'an invalid URL';
+	}
+}
+
+// The fetch for every sign-in request (metadata discovery, token, revocation): it refuses any URL that is not https
+// (see isSecureUrl), so a hostile or broken metadata document cannot send codes or tokens in clear text.
+export function signInFetch(endpoint, fetchImpl = fetch) {
+	return (input, init) => {
+		const url = input instanceof Request ? input.url : String(input);
+		if (!isSecureUrl(url, endpoint)) {
+			return Promise.reject(new RemoteError('auth_server', `TestWise sign-in uses ${origin(url)}, which is not https, so it was not contacted.`));
+		}
+		return fetchImpl(input, init);
+	};
+}
 
 // The OAuth client the SDK's auth() drives: the first-party public client "testwise-mcp", PKCE, a loopback redirect.
 // Tokens live in the credential store. A provider made with { interactive: false } never opens a browser: when a
 // new sign-in would be needed, it records that and lets the request fail, so the session can offer `connect`.
 // The SDK never sees the refresh token: TokenRefresher (refresh.js) refreshes, once, under the credentials lock.
 export class TestwiseOAuthProvider {
-	constructor({ store, serverKey, interactive = false, redirectUrl, onAuthorizationUrl }) {
+	constructor({ store, serverKey, endpoint = new URL(serverKey), interactive = false, redirectUrl, onAuthorizationUrl }) {
 		this.store = store;
 		this.serverKey = serverKey;
+		this.endpoint = endpoint;
 		this.interactive = interactive;
 		this._redirectUrl = redirectUrl ?? PLACEHOLDER_REDIRECT;
 		this.onAuthorizationUrl = onAuthorizationUrl;
@@ -73,6 +98,10 @@ export class TestwiseOAuthProvider {
 	}
 
 	redirectToAuthorization(authorizationUrl) {
+		// Never hand the opener anything but a web page: file:, ms-msdt: and other schemes can run programs.
+		if (!isSecureUrl(authorizationUrl, this.endpoint)) {
+			throw new RemoteError('auth_server', `TestWise advertised a sign-in page at ${origin(authorizationUrl)}, which is not https, so it was not opened.`);
+		}
 		this.authorizationUrl = authorizationUrl;
 		if (!this.interactive) {
 			this.needsSignIn = true;

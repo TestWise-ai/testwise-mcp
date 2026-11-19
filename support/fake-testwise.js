@@ -239,9 +239,13 @@ async function handleToken(req, res, state) {
 	return oauthError(res, 400, 'unsupported_grant_type', 'Unsupported grant type');
 }
 
-async function handleRevoke(req, res, state) {
+async function handleRevoke(req, res, state, moved = false) {
 	const params = new URLSearchParams((await readBody(req)).toString('utf8'));
-	state.revocations.push({ hint: params.get('token_type_hint'), clientId: params.get('client_id') });
+	if (!moved && state.revokeRedirect) {
+		res.writeHead(307, { Location: `${state.baseUrl}/oauth/revoke-moved` }).end();
+		return;
+	}
+	state.revocations.push({ hint: params.get('token_type_hint'), clientId: params.get('client_id'), moved });
 	const record = state.refreshTokens.get(params.get('token')) ?? state.accessTokens.get(params.get('token'));
 	if (record) revokeGrant(state, record.grant);
 	res.writeHead(200).end();
@@ -336,11 +340,13 @@ function route(req, res, state) {
 			scopes_supported: ['handoff'],
 			client_id_metadata_document_supported: true,
 			authorization_response_iss_parameter_supported: true,
+			...state.metadataOverrides,
 		});
 	}
 	if (pathname === '/oauth/authorize' && req.method === 'GET') return handleAuthorize(req, res, state, url);
 	if (pathname === '/oauth/token' && req.method === 'POST') return handleToken(req, res, state);
 	if (pathname === '/oauth/revoke' && req.method === 'POST') return handleRevoke(req, res, state);
+	if (pathname === '/oauth/revoke-moved' && req.method === 'POST') return handleRevoke(req, res, state, true);
 	if (pathname === '/mcp') return handleMcp(req, res, state);
 	const upload = /^\/upload\/([^/]+)$/.exec(pathname);
 	if (upload) return handleUpload(req, res, state, upload[1]);
@@ -362,6 +368,9 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		callbackIss: undefined,
 		denyError: null,
 		denyDescription: null,
+		// Merged into the authorization server metadata, to advertise hostile endpoints.
+		metadataOverrides: {},
+		revokeRedirect: false,
 		failRefresh: false,
 		tools: new Map(),
 		calls: [],

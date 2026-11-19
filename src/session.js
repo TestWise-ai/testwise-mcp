@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
-import { openBrowser, startLoopback, TestwiseOAuthProvider } from './oauth.js';
+import { openBrowser, signInFetch, startLoopback, TestwiseOAuthProvider } from './oauth.js';
 import { authorizedFetch, TokenRefresher } from './refresh.js';
 import { RemoteError, Remote, toRemoteError } from './remote.js';
 
@@ -30,8 +30,9 @@ export class Session extends EventEmitter {
 		this.tools = [];
 		this.signIn = null;
 		this.connecting = null;
-		this.refresher = new TokenRefresher({ store, serverKey: this.serverKey, endpoint });
-		this.fetch = authorizedFetch({ endpoint, refresher: this.refresher });
+		this.signInFetch = signInFetch(endpoint);
+		this.refresher = new TokenRefresher({ store, serverKey: this.serverKey, endpoint, fetchFn: this.signInFetch });
+		this.fetch = authorizedFetch({ endpoint, refresher: this.refresher, fetchFn: this.signInFetch });
 	}
 
 	get connected() {
@@ -55,7 +56,7 @@ export class Session extends EventEmitter {
 
 	async openRemote() {
 		if (!this.hasCredentials()) return false;
-		const provider = new TestwiseOAuthProvider({ store: this.store, serverKey: this.serverKey });
+		const provider = new TestwiseOAuthProvider({ store: this.store, serverKey: this.serverKey, endpoint: this.endpoint });
 		const remote = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo, fetch: this.fetch });
 		try {
 			await remote.connect();
@@ -130,6 +131,7 @@ export class Session extends EventEmitter {
 		provider = new TestwiseOAuthProvider({
 			store: this.store,
 			serverKey: this.serverKey,
+			endpoint: this.endpoint,
 			interactive: true,
 			redirectUrl: loopback.redirectUrl,
 			onAuthorizationUrl: (url) => {
@@ -175,7 +177,7 @@ export class Session extends EventEmitter {
 				: `Sign-in failed: ${callback.errorDescription || callback.error}.`);
 		}
 		try {
-			await auth(provider, { serverUrl: this.endpoint, authorizationCode: callback.code });
+			await auth(provider, { serverUrl: this.endpoint, authorizationCode: callback.code, fetchFn: this.signInFetch });
 		} catch (error) {
 			throw toRemoteError(error, this.endpoint.href);
 		}

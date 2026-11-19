@@ -2,8 +2,9 @@ import { discoverOAuthServerInfo } from '@modelcontextprotocol/sdk/client/auth.j
 import { whoami } from './connect-tool.js';
 import { CredentialStore, tokenExpiry } from './credentials.js';
 import { log } from './log.js';
-import { CLIENT_ID } from './oauth.js';
+import { CLIENT_ID, signInFetch } from './oauth.js';
 import { redact } from './redact.js';
+import { sameIssuer } from './refresh.js';
 import { Session } from './session.js';
 
 const LOGIN_WAIT_MS = 10 * 60 * 1000;
@@ -32,15 +33,19 @@ function flushWarnings(store) {
 }
 
 async function revoke(endpoint, tokens) {
-	const { authorizationServerMetadata: metadata } = await discoverOAuthServerInfo(endpoint);
+	const fetchFn = signInFetch(endpoint);
+	const { authorizationServerUrl, authorizationServerMetadata: metadata } = await discoverOAuthServerInfo(endpoint, { fetchFn });
 	if (!metadata?.revocation_endpoint) return false;
+	// Tokens go only to the authorization server that issued them.
+	if (tokens.issuer && !sameIssuer(tokens.issuer, String(authorizationServerUrl))) return false;
 	let revoked = true;
 	for (const [token, hint] of [[tokens.refresh_token, 'refresh_token'], [tokens.access_token, 'access_token']]) {
 		if (!token) continue;
-		const response = await fetch(metadata.revocation_endpoint, {
+		const response = await fetchFn(metadata.revocation_endpoint, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({ token, token_type_hint: hint, client_id: CLIENT_ID }),
+			redirect: 'manual',
 			signal: AbortSignal.timeout(15_000),
 		});
 		await response.body?.cancel();

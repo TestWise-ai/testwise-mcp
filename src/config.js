@@ -8,6 +8,19 @@ export function isLoopbackHost(hostname) {
 	return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
+// Whether a URL may carry sign-in traffic or be opened in the browser: https, or plain http on loopback when TestWise
+// itself runs on loopback (local development). Anything else, file: and custom schemes included, is refused.
+export function isSecureUrl(value, endpoint) {
+	let url;
+	try {
+		url = new URL(value);
+	} catch {
+		return false;
+	}
+	if (url.protocol === 'https:') return true;
+	return url.protocol === 'http:' && isLoopbackHost(url.hostname) && endpoint.protocol === 'http:' && isLoopbackHost(endpoint.hostname);
+}
+
 // TESTWISE_URL is the only setting. The MCP endpoint is <TESTWISE_URL>/mcp; it also keys the cached credentials.
 export function readConfig(env) {
 	const rawUrl = (env.TESTWISE_URL ?? '').trim() || DEFAULT_URL;
