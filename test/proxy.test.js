@@ -213,6 +213,35 @@ describe('tool list changes at TestWise', () => {
 	});
 });
 
+describe('tool list changes at a TestWise that cannot push them', () => {
+	let fake;
+	let home;
+	let proxy;
+
+	before(async () => {
+		({ fake, home, proxy } = await signedInProxy());
+		assert.equal(fake.state.pushNotifications, false);
+	});
+
+	after(async () => {
+		await proxy?.close();
+		await fake?.close();
+		await home?.remove();
+	});
+
+	test('a call to a tool TestWise no longer has makes the client re-list', async () => {
+		await proxy.client.listTools();
+		fake.state.tools.delete('request_retest');
+		const changed = proxy.nextListChanged();
+		await assert.rejects(proxy.client.callTool({ name: 'request_retest', arguments: { key: 'LAR-41', build: 'iOS 212' } }), /not found/);
+		await Promise.race([changed, new Promise((resolve, reject) => {
+			setTimeout(() => reject(new Error('no notifications/tools/list_changed')), 5000);
+		})]);
+		const { tools } = await proxy.client.listTools();
+		assert.ok(!tools.some((tool) => tool.name === 'request_retest'));
+	});
+});
+
 describe('hosted server goes down mid-session', () => {
 	let fake;
 	let home;

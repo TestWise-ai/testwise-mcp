@@ -1,10 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { openBrowser, signInFetch, startLoopback, TestwiseOAuthProvider } from './oauth.js';
 import { authorizedFetch, TokenRefresher } from './refresh.js';
 import { RemoteError, Remote, toRemoteError } from './remote.js';
+import { resultText } from './tool-result.js';
 
 const SIGN_IN_LIFETIME_MS = 10 * 60 * 1000;
+// The hosted server cannot tell this process that its tools changed, so while the session is in use the list is
+// fetched again once it is this old, and after any call to a tool TestWise does not know.
+const TOOLS_REFRESH_MS = 10 * 60 * 1000;
+const UNKNOWN_TOOL = /\bunknown tool\b|\btool\b.*\bnot found\b/i;
+
+function isUnknownToolError(error) {
+	return error instanceof McpError && [ErrorCode.InvalidParams, ErrorCode.MethodNotFound].includes(error.code) && UNKNOWN_TOOL.test(error.message);
+}
 
 function withTimeout(promise, ms) {
 	let timer;
@@ -17,7 +27,7 @@ function withTimeout(promise, ms) {
 // The connection to the hosted TestWise MCP endpoint. Emits 'change' whenever it connects or drops back to
 // signed out, so the stdio server can send notifications/tools/list_changed.
 export class Session extends EventEmitter {
-	constructor({ endpoint, store, clientInfo, log, openUrl = openBrowser }) {
+	constructor({ endpoint, store, clientInfo, log, openUrl = openBrowser, toolsRefreshMs = TOOLS_REFRESH_MS }) {
 		super();
 		this.endpoint = endpoint;
 		this.serverKey = endpoint.href;
@@ -28,6 +38,8 @@ export class Session extends EventEmitter {
 		this.remote = null;
 		this.instructions = undefined;
 		this.tools = [];
+		this.toolsListedAt = 0;
+		this.toolsRefreshMs = toolsRefreshMs;
 		this.signIn = null;
 		this.connecting = null;
 		this.signInFetch = signInFetch(endpoint);
@@ -70,6 +82,7 @@ export class Session extends EventEmitter {
 			this.remote = remote;
 			this.instructions = remote.instructions;
 			this.tools = tools;
+			this.toolsListedAt = Date.now();
 		} catch (error) {
 			await remote.close().catch(() => {});
 			if (error instanceof RemoteError && error.kind === 'auth') return false;
@@ -92,6 +105,7 @@ export class Session extends EventEmitter {
 	async refreshTools() {
 		try {
 			this.tools = await this.remote.listTools();
+			this.toolsListedAt = Date.now();
 		} catch (error) {
 			if (error instanceof RemoteError && error.kind === 'auth') {
 				await this.signedOut(error.message);
@@ -101,21 +115,31 @@ export class Session extends EventEmitter {
 		}
 	}
 
-	// TestWise said its tool list changed: refresh it, and tell the client if it really did.
-	async remoteToolsChanged(remote) {
-		if (this.remote !== remote) return;
+	// Fetches the tool list again, and tells the client (through 'change') if it differs.
+	async relistTools(remote = this.remote) {
+		if (!remote || this.remote !== remote) return;
 		const before = JSON.stringify(this.tools);
 		await this.refreshTools();
 		if (this.remote === remote && JSON.stringify(this.tools) !== before) this.emit('change');
 	}
 
+	// TestWise said its tool list changed (only a server that can push says so).
+	remoteToolsChanged(remote) {
+		return this.relistTools(remote);
+	}
+
 	async callTool(name, args, options) {
+		let result;
 		try {
-			return await this.remote.callTool(name, args, options);
+			result = await this.remote.callTool(name, args, options);
 		} catch (error) {
 			if (error instanceof RemoteError && error.kind === 'auth') await this.signedOut(error.message);
+			else if (isUnknownToolError(error)) await this.relistTools();
 			throw error;
 		}
+		if (result?.isError && UNKNOWN_TOOL.test(resultText(result))) await this.relistTools();
+		else if (Date.now() - this.toolsListedAt > this.toolsRefreshMs) this.relistTools().catch(() => {});
+		return result;
 	}
 
 	// Signs in through the browser: the first-party public client, PKCE (S256), a loopback redirect on a random port.
