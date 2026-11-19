@@ -66,8 +66,8 @@ export const attachFileTool = {
 
 // Never uploaded, whatever an agent is asked to do: the TestWise sign-in, and the usual homes of credentials and keys.
 // Matched on the path as given and on the file it resolves to, so a symlink cannot smuggle one out.
-const SECRET_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.config/gcloud', 'Library/Keychains'];
-const SECRET_FILES = ['.docker/config.json'];
+const SECRET_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.azure', '.config/gcloud', '.gnupg', 'Library/Keychains'];
+const SECRET_FILES = ['.docker/config.json', '.kube/config', '.git-credentials'];
 const SECRET_NAMES = [
 	[/^\.env/, '.env*'],
 	[/^\.npmrc$/, '.npmrc'],

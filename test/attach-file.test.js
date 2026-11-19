@@ -218,6 +218,10 @@ describe('attach_file', () => {
 			'.npmrc': '//registry.example/:_authToken=x',
 			'.netrc': 'machine example login me password x',
 			'Library/Keychains/login.keychain-db': 'keychain',
+			'.gnupg/private-keys-v1.d/key.txt': 'private key',
+			'.kube/config': 'apiVersion: v1',
+			'.git-credentials': 'https://me:x@git.example',
+			'.azure/msal_token_cache.json': '{}',
 		};
 		for (const [name, content] of Object.entries(secrets)) {
 			await mkdir(path.dirname(path.join(home.home, name)), { recursive: true });
