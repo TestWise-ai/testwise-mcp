@@ -9,6 +9,7 @@ const PLACEHOLDER_REDIRECT = 'http://127.0.0.1/callback';
 // The OAuth client the SDK's auth() drives: the first-party public client "testwise-mcp", PKCE, a loopback redirect.
 // Tokens live in the credential store. A provider made with { interactive: false } never opens a browser: when a
 // new sign-in would be needed, it records that and lets the request fail, so the session can offer `connect`.
+// The SDK never sees the refresh token: TokenRefresher (refresh.js) refreshes, once, under the credentials lock.
 export class TestwiseOAuthProvider {
 	constructor({ store, serverKey, interactive = false, redirectUrl, onAuthorizationUrl }) {
 		this.store = store;
@@ -21,6 +22,7 @@ export class TestwiseOAuthProvider {
 		this._codeVerifier = null;
 		this._state = null;
 		this._discovery = undefined;
+		this._lastTokens = null;
 	}
 
 	get redirectUrl() {
@@ -52,15 +54,20 @@ export class TestwiseOAuthProvider {
 	}
 
 	tokens() {
-		return this.store.get(this.serverKey)?.tokens ?? undefined;
+		const tokens = this.store.get(this.serverKey)?.tokens ?? null;
+		this._lastTokens = tokens;
+		if (!tokens) return undefined;
+		const { refresh_token: hidden, ...withoutRefresh } = tokens;
+		return withoutRefresh;
 	}
 
-	saveTokens(tokens) {
-		this.store.saveTokens(this.serverKey, tokens);
+	async saveTokens(tokens) {
+		await this.store.saveTokens(this.serverKey, tokens);
 	}
 
-	invalidateCredentials(scope) {
-		if (scope === 'all' || scope === 'tokens') this.store.removeTokens(this.serverKey);
+	// Deletes the saved pair only if it is still the one this provider handed out.
+	async invalidateCredentials(scope) {
+		if ((scope === 'all' || scope === 'tokens') && this._lastTokens) await this.store.removeTokensIf(this.serverKey, this._lastTokens);
 		if (scope === 'all' || scope === 'verifier') this._codeVerifier = null;
 		if (scope === 'all' || scope === 'discovery') this._discovery = undefined;
 	}

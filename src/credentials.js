@@ -1,22 +1,47 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { registerSecret } from './redact.js';
 
 const POSIX = process.platform !== 'win32';
+
+// The credentials lock is held for one read-modify-write, or one refresh: a token request with a 15 s timeout. A lock
+// older than LOCK_STALE_MS, or left by a process that has exited, was abandoned and is taken over.
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 45_000;
+const LOCK_RETRY_MS = 25;
 
 function registerTokens(tokens) {
 	registerSecret(tokens?.access_token);
 	registerSecret(tokens?.refresh_token);
 }
 
+export function sameTokens(a, b) {
+	return Boolean(a && b) && a.access_token === b.access_token && a.refresh_token === b.refresh_token;
+}
+
+function processIsGone(pid) {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return error.code === 'ESRCH';
+	}
+}
+
 // OAuth credentials, one entry per TestWise MCP endpoint, in ~/.testwise/credentials.json.
-// The directory is 0700 and the file 0600; every write replaces the file atomically.
+// The directory is 0700 and the file 0600; every write replaces the file atomically. Every change is a
+// read-modify-write under ~/.testwise/credentials.lock, so testwise-mcp processes sharing the file never lose
+// each other's changes. Reads take no lock: the file is only ever replaced whole.
 export class CredentialStore {
 	constructor({ homeDir = os.homedir() } = {}) {
 		this.dir = path.join(homeDir, '.testwise');
 		this.file = path.join(this.dir, 'credentials.json');
+		this.lockFile = path.join(this.dir, 'credentials.lock');
 		this.warnings = [];
+		this.queue = Promise.resolve();
 	}
 
 	warn(message) {
@@ -55,9 +80,77 @@ export class CredentialStore {
 		}
 	}
 
-	writeAll(data) {
+	ensureDir() {
 		mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 		if (POSIX && (statSync(this.dir).mode & 0o077) !== 0) chmodSync(this.dir, 0o700);
+	}
+
+	// Runs task while holding the credentials lock: one task at a time in this process, and across processes
+	// through the lock file, created exclusively.
+	withLock(task) {
+		const run = this.queue.then(async () => {
+			const release = await this.acquireLock();
+			try {
+				return await task();
+			} finally {
+				release();
+			}
+		});
+		this.queue = run.catch(() => {});
+		return run;
+	}
+
+	async acquireLock() {
+		this.ensureDir();
+		const deadline = Date.now() + LOCK_WAIT_MS;
+		const mine = JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now(), id: randomBytes(8).toString('hex') });
+		for (;;) {
+			let fd;
+			try {
+				fd = openSync(this.lockFile, 'wx', 0o600);
+			} catch (error) {
+				if (error.code !== 'EEXIST') throw error;
+			}
+			if (fd !== undefined) {
+				try {
+					writeSync(fd, mine);
+				} finally {
+					closeSync(fd);
+				}
+				return () => {
+					try {
+						if (readFileSync(this.lockFile, 'utf8') === mine) rmSync(this.lockFile, { force: true });
+					} catch {
+						// Already gone.
+					}
+				};
+			}
+			if (this.lockIsStale()) {
+				rmSync(this.lockFile, { force: true });
+				continue;
+			}
+			if (Date.now() > deadline) throw new Error(`${this.lockFile} is held by another testwise-mcp process. Try again shortly.`);
+			await delay(LOCK_RETRY_MS);
+		}
+	}
+
+	lockIsStale() {
+		let info = null;
+		let modified;
+		try {
+			modified = statSync(this.lockFile).mtimeMs;
+			info = JSON.parse(readFileSync(this.lockFile, 'utf8'));
+		} catch (error) {
+			if (error.code === 'ENOENT') return false;
+			// Unreadable, or still being written: judged by its age alone.
+		}
+		const takenAt = Number.isFinite(info?.at) ? info.at : modified;
+		if (Number.isFinite(takenAt) && Date.now() - takenAt > LOCK_STALE_MS) return true;
+		return info?.host === os.hostname() && Number.isInteger(info?.pid) && processIsGone(info.pid);
+	}
+
+	writeAll(data) {
+		this.ensureDir();
 		const temp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
 		try {
 			writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -74,23 +167,47 @@ export class CredentialStore {
 		return entry && typeof entry === 'object' ? entry : null;
 	}
 
-	update(serverKey, change) {
+	// The *Held methods expect the caller to hold the lock (see withLock); the others take it themselves.
+	updateHeld(serverKey, change) {
 		const data = this.readAll();
-		const next = change(data.servers[serverKey] ?? null);
+		const entry = data.servers[serverKey] ?? null;
+		const next = change(entry);
+		if (next === entry) return;
 		if (next) data.servers[serverKey] = next;
 		else delete data.servers[serverKey];
 		this.writeAll(data);
 	}
 
-	saveTokens(serverKey, tokens) {
-		registerTokens(tokens);
-		this.update(serverKey, (entry) => ({ ...(entry ?? {}), clientId: 'testwise-mcp', tokens, savedAt: new Date().toISOString() }));
+	update(serverKey, change) {
+		return this.withLock(() => this.updateHeld(serverKey, change));
 	}
 
-	removeTokens(serverKey) {
-		if (!this.get(serverKey)) return false;
-		this.update(serverKey, () => null);
-		return true;
+	saveTokensHeld(serverKey, tokens) {
+		registerTokens(tokens);
+		this.updateHeld(serverKey, (entry) => ({ ...(entry ?? {}), clientId: 'testwise-mcp', tokens, savedAt: new Date().toISOString() }));
+	}
+
+	saveTokens(serverKey, tokens) {
+		return this.withLock(() => this.saveTokensHeld(serverKey, tokens));
+	}
+
+	async removeTokens(serverKey) {
+		let removed = false;
+		await this.update(serverKey, (entry) => {
+			removed = Boolean(entry);
+			return null;
+		});
+		return removed;
+	}
+
+	// Compare-and-delete: removes the saved pair only if it is still `tokens`, so a pair another process saved
+	// meanwhile survives.
+	removeTokensIfHeld(serverKey, tokens) {
+		this.updateHeld(serverKey, (entry) => (sameTokens(entry?.tokens, tokens) ? null : entry));
+	}
+
+	removeTokensIf(serverKey, tokens) {
+		return this.withLock(() => this.removeTokensIfHeld(serverKey, tokens));
 	}
 }
 

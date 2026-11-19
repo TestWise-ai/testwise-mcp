@@ -1,6 +1,9 @@
 // A stand-in for hosted TestWise, used by the tests. One HTTP server plays three parts:
 // - the OAuth authorization server: RFC 8414 metadata, /oauth/authorize (decides at once, by redirecting back),
-//   /oauth/token (authorization_code with PKCE S256, refresh_token with rotation and reuse detection), /oauth/revoke;
+//   /oauth/token (authorization_code with PKCE S256, refresh_token with rotation and reuse detection), /oauth/revoke.
+//   Refresh-token reuse follows the hosted rules by default ('grace'): every presenter of a used refresh token within
+//   graceMs gets the same successor pair, and a reuse after that revokes that sign-in's token family only. In 'strict'
+//   mode any reuse revokes the family at once, so a client that ever presents a refresh token twice loses its sign-in;
 // - the protected resource: RFC 9728 metadata and a stateless Streamable HTTP MCP server on /mcp that answers
 //   401 with a WWW-Authenticate resource_metadata challenge when the bearer token is missing or invalid;
 // - storage: a presigned-upload endpoint on /upload.
@@ -142,11 +145,17 @@ function oauthError(res, status, error, description) {
 	sendJson(res, status, { error, error_description: description });
 }
 
+function delay(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
 function issueTokens(state, grant) {
 	const accessToken = secret('at');
 	const refreshToken = secret('rt');
 	state.accessTokens.set(accessToken, { grant, expiresAt: Date.now() + state.accessTokenTtl * 1000, revoked: false });
-	state.refreshTokens.set(refreshToken, { grant, used: false, revoked: false });
+	state.refreshTokens.set(refreshToken, { grant, used: false, usedAt: 0, successor: null, revoked: false });
 	return { access_token: accessToken, token_type: 'Bearer', expires_in: state.accessTokenTtl, refresh_token: refreshToken, scope: 'handoff' };
 }
 
@@ -214,12 +223,17 @@ async function handleToken(req, res, state) {
 		const record = state.refreshTokens.get(params.get('refresh_token'));
 		if (!record || record.revoked) return oauthError(res, 400, 'invalid_grant', 'Unknown or revoked refresh token');
 		if (record.used) {
+			if (state.refreshReuse === 'grace' && Date.now() - record.usedAt <= state.graceMs) return sendJson(res, 200, record.successor);
+			state.reuseDetections.push({ grant: record.grant });
 			revokeGrant(state, record.grant);
 			return oauthError(res, 400, 'invalid_grant', 'Refresh token reused; the connection was revoked');
 		}
 		if (state.failRefresh) return oauthError(res, 400, 'invalid_grant', 'The connection was revoked');
 		record.used = true;
-		return sendJson(res, 200, issueTokens(state, record.grant));
+		record.usedAt = Date.now();
+		record.successor = issueTokens(state, record.grant);
+		if (state.tokenDelayMs) await delay(state.tokenDelayMs);
+		return sendJson(res, 200, record.successor);
 	}
 	return oauthError(res, 400, 'unsupported_grant_type', 'Unsupported grant type');
 }
@@ -332,11 +346,15 @@ function route(req, res, state) {
 	return undefined;
 }
 
-export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, accessTokenTtl = 3600 } = {}) {
+export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, accessTokenTtl = 3600, refreshReuse = 'grace', graceMs = 60_000 } = {}) {
 	const state = {
 		baseUrl: '',
 		instructions,
 		accessTokenTtl,
+		refreshReuse,
+		graceMs,
+		tokenDelayMs: 0,
+		reuseDetections: [],
 		authorizeMode: 'approve',
 		failRefresh: false,
 		tools: new Map(),
@@ -387,6 +405,15 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		},
 		liveTokenCount() {
 			return [...state.accessTokens.values()].filter((record) => !record.revoked && record.expiresAt > Date.now()).length;
+		},
+		// Whether an access token would be accepted now, and whether a refresh token could still be exchanged.
+		isLive(tokens) {
+			const access = state.accessTokens.get(tokens?.access_token);
+			const refresh = state.refreshTokens.get(tokens?.refresh_token);
+			return Boolean(access && !access.revoked && access.expiresAt > Date.now() && refresh && !refresh.revoked && !refresh.used);
+		},
+		refreshCount() {
+			return state.tokenRequests.filter((request) => request.grantType === 'refresh_token').length;
 		},
 		async close() {
 			server.closeAllConnections();

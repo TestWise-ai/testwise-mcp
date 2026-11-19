@@ -93,10 +93,11 @@ export function toRemoteError(error, endpoint) {
 }
 
 export class Remote {
-	constructor({ endpoint, authProvider, clientInfo }) {
+	constructor({ endpoint, authProvider, clientInfo, fetch }) {
 		this.endpoint = endpoint;
 		this.authProvider = authProvider;
 		this.clientInfo = clientInfo;
+		this.fetch = fetch;
 		this.client = null;
 	}
 
@@ -104,7 +105,7 @@ export class Remote {
 		const client = new Client(this.clientInfo, { capabilities: {} });
 		// Failures surface on the request that caused them, so the transport's error channel stays quiet.
 		client.onerror = () => {};
-		const transport = new StreamableHTTPClientTransport(this.endpoint, { authProvider: this.authProvider });
+		const transport = new StreamableHTTPClientTransport(this.endpoint, { authProvider: this.authProvider, fetch: this.fetch });
 		try {
 			await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
 		} catch (error) {

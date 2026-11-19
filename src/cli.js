@@ -75,7 +75,7 @@ async function logout({ config, store }) {
 	} catch (error) {
 		log(`Could not reach TestWise to revoke the sign-in: ${error.message}`);
 	}
-	store.removeTokens(config.endpoint.href);
+	await store.removeTokens(config.endpoint.href);
 	say(`Signed out of TestWise at ${config.endpoint.href}.`);
 	if (!revoked) say('TestWise did not confirm the revocation, so the old sign-in stays valid until it expires or is revoked in TestWise.');
 	return 0;

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import { openBrowser, startLoopback, TestwiseOAuthProvider } from './oauth.js';
+import { authorizedFetch, TokenRefresher } from './refresh.js';
 import { RemoteError, Remote, toRemoteError } from './remote.js';
 
 const SIGN_IN_LIFETIME_MS = 10 * 60 * 1000;
@@ -29,6 +30,8 @@ export class Session extends EventEmitter {
 		this.tools = [];
 		this.signIn = null;
 		this.connecting = null;
+		this.refresher = new TokenRefresher({ store, serverKey: this.serverKey, endpoint });
+		this.fetch = authorizedFetch({ endpoint, refresher: this.refresher });
 	}
 
 	get connected() {
@@ -53,7 +56,7 @@ export class Session extends EventEmitter {
 	async openRemote() {
 		if (!this.hasCredentials()) return false;
 		const provider = new TestwiseOAuthProvider({ store: this.store, serverKey: this.serverKey });
-		const remote = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo });
+		const remote = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo, fetch: this.fetch });
 		try {
 			await remote.connect();
 			const tools = await remote.listTools();
@@ -135,7 +138,7 @@ export class Session extends EventEmitter {
 			},
 		});
 
-		const probe = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo });
+		const probe = new Remote({ endpoint: this.endpoint, authProvider: provider, clientInfo: this.clientInfo, fetch: this.fetch });
 		try {
 			await probe.connect();
 		} catch (error) {
