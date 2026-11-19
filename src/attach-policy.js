@@ -12,6 +12,8 @@ import path from 'node:path';
 //    hold a private key.
 
 const SCREENSHOT_FOLDERS = ['Desktop', 'Downloads', 'Pictures', 'Movies'];
+// Settings and application data in the home folder: never a project, even when this server is started inside them.
+const SETTINGS_FOLDERS = ['Library', '.config', '.local/share'];
 
 // Relative to the home folder.
 const BLOCKED_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.azure', '.gnupg', '.config/gcloud', '.config/gh', 'Library/Keychains'];
@@ -134,27 +136,61 @@ function extraFolders(env, cwd, homeDir) {
 		.map((entry) => path.resolve(cwd, entry === '~' || entry.startsWith('~/') ? path.join(homeDir, entry.slice(1)) : entry));
 }
 
-// The identities of the allowed folders that exist, and whether the project folder is one of them.
-export async function allowedFolders({ cwd, homeDir, env, tmpDirs }) {
+// Each dropped folder is reported once per warn function (once per process for the default, the log).
+const warned = new WeakMap();
+
+function warnOnce(warn, message) {
+	if (!warn) return;
+	if (!warned.has(warn)) warned.set(warn, new Set());
+	const seen = warned.get(warn);
+	if (seen.has(message)) return;
+	seen.add(message);
+	warn(message);
+}
+
+// The identities of the allowed folders that exist, and whether the project folder is one of them. No allowed
+// folder may be the home folder or a folder above it, whichever way it is named or linked: that would open the whole
+// home folder. Such folders are dropped with a warning.
+export async function allowedFolders({ cwd, homeDir, env, tmpDirs, warn }) {
 	const ids = new Set();
-	const add = async (folder) => {
-		const found = await identity(folder);
-		if (found?.directory) ids.add(found.id);
-	};
 	const homeAndAbove = new Set(await ancestry(await realpath(homeDir).catch(() => homeDir)));
+	const add = async (folder, role) => {
+		const found = await identity(folder);
+		if (!found?.directory) return;
+		if (homeAndAbove.has(found.id)) {
+			warnOnce(warn, `attach_file does not read from ${folder} (${role}): it is your home folder or a folder above it.`);
+			return;
+		}
+		ids.add(found.id);
+	};
+
+	const settings = new Set();
+	for (const folder of SETTINGS_FOLDERS) {
+		const found = await identity(path.join(homeDir, folder));
+		if (found) settings.add(found.id);
+	}
 	const project = await identity(cwd);
-	const projectAllowed = Boolean(project?.directory) && !homeAndAbove.has(project.id);
-	if (projectAllowed) ids.add(project.id);
-	for (const folder of tmpDirs) await add(folder);
-	for (const folder of SCREENSHOT_FOLDERS) await add(path.join(homeDir, folder));
-	for (const folder of extraFolders(env, cwd, homeDir)) await add(folder);
+	let projectAllowed = false;
+	if (project?.directory) {
+		const chain = await ancestry(await realpath(cwd).catch(() => cwd));
+		if (homeAndAbove.has(project.id) || chain.some((id) => settings.has(id))) {
+			warnOnce(warn, `attach_file does not read from ${cwd} (the folder this server was started in): it is your home folder, `
+				+ 'a folder above it or a settings folder.');
+		} else {
+			ids.add(project.id);
+			projectAllowed = true;
+		}
+	}
+	for (const folder of tmpDirs) await add(folder, 'a temp folder');
+	for (const folder of SCREENSHOT_FOLDERS) await add(path.join(homeDir, folder), 'a screenshot folder');
+	for (const folder of extraFolders(env, cwd, homeDir)) await add(folder, 'listed in TESTWISE_ATTACH_DIRS');
 	return { ids, projectAllowed };
 }
 
 export function outsideMessage(resolved, { cwd, projectAllowed }) {
 	const project = projectAllowed
 		? `the project folder (${cwd})`
-		: `the project folder (none: this server was started in ${cwd}, which is your home folder or above it)`;
+		: `the project folder (none: this server was started in ${cwd}, which is your home folder, a folder above it or a settings folder)`;
 	return `${resolved} is outside the folders attach_file reads from: ${project}, the temp folder, and Desktop, Downloads, `
 		+ 'Pictures and Movies in your home folder. To allow another folder, add it to TESTWISE_ATTACH_DIRS in this '
 		+ `server's environment (separate several with "${path.delimiter}").`;

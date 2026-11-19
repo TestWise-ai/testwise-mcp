@@ -6,6 +6,7 @@ import path from 'node:path';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { allowedFolders, ancestry, blockedRule, blockedSet, defaultTmpDirs, holdsPrivateKey, outsideMessage } from './attach-policy.js';
 import { isSecureUrl } from './config.js';
+import { log } from './log.js';
 import { forgetSecret, redact, registerSecret } from './redact.js';
 import { readAttachment, readUploadTicket, resultText } from './tool-result.js';
 
@@ -116,7 +117,7 @@ function refusedSecret(resolved, rule) {
 	return new AttachError(`${resolved} is a credentials or key file (${rule}), so attach_file does not upload it.`);
 }
 
-async function readLocalFile(resolved, { cwd, homeDir, env, tmpDirs }) {
+async function readLocalFile(resolved, { cwd, homeDir, env, tmpDirs, warn }) {
 	let real;
 	try {
 		real = await realpath(resolved);
@@ -124,7 +125,7 @@ async function readLocalFile(resolved, { cwd, homeDir, env, tmpDirs }) {
 		throw unreadable(resolved, error);
 	}
 	const chain = await ancestry(real);
-	const allowed = await allowedFolders({ cwd, homeDir, env, tmpDirs });
+	const allowed = await allowedFolders({ cwd, homeDir, env, tmpDirs, warn });
 	if (!chain.some((id) => allowed.ids.has(id))) throw new AttachError(outsideMessage(resolved, { cwd, ...allowed }));
 	const { blocked, complete } = await blockedSet(homeDir);
 	const rule = blockedRule({ resolved, real, chain, homeDir, blocked });
@@ -259,7 +260,7 @@ function progressReporter(onprogress) {
 }
 
 export async function attachFile(args, {
-	remote, cwd = process.cwd(), homeDir = os.homedir(), env = process.env, tmpDirs = defaultTmpDirs(), fetchImpl = globalThis.fetch,
+	remote, cwd = process.cwd(), homeDir = os.homedir(), env = process.env, tmpDirs = defaultTmpDirs(), warn = log, fetchImpl = globalThis.fetch,
 	signal, onprogress, progressIntervalMs = PROGRESS_INTERVAL_MS,
 }) {
 	const report = progressReporter(onprogress);
@@ -273,7 +274,7 @@ export async function attachFile(args, {
 	let bytes;
 	try {
 		resolved = resolveLocalPath(filePath, cwd, { homeDir });
-		bytes = await readLocalFile(resolved, { cwd, homeDir, env, tmpDirs });
+		bytes = await readLocalFile(resolved, { cwd, homeDir, env, tmpDirs, warn });
 	} catch (error) {
 		if (error instanceof AttachError) return failure(error.message);
 		return failure(`${resolved ?? filePath} cannot be read (${error.code ?? error.message}).`);

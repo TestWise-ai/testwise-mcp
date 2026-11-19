@@ -95,7 +95,60 @@ describe('which files attach_file reads', () => {
 			for (const cwd of [home, path.parse(home).root]) {
 				const { result } = await attach(file, { cwd });
 				assert.equal(result.isError, true, cwd);
-				assert.match(text(result), /the project folder \(none: this server was started in .*, which is your home folder or above it\)/);
+				assert.match(text(result), /the project folder \(none: this server was started in .*, which is your home folder, a folder above it or a settings folder\)/);
+			}
+		});
+
+		test('a settings folder in the home folder is never the project folder', async () => {
+			for (const settings of ['Library/Application Support/tool', '.config/tool', '.local/share/tool']) {
+				const cwd = path.join(home, settings);
+				const warnings = [];
+				const { result, sent } = await attach(await put(path.join(cwd, 'l.png')), { cwd, warn: (message) => warnings.push(message) });
+				assert.equal(result.isError, true, settings);
+				assert.match(text(result), /the project folder \(none: /, settings);
+				assert.equal(sent, false);
+				assert.equal(warnings.length, 1, settings);
+				assert.match(warnings[0], /does not read from .* \(the folder this server was started in\): it is your home folder, a folder above it or a settings folder/);
+			}
+		});
+
+		test('a screenshot folder that links to the home folder allows nothing', async () => {
+			const otherHome = path.join(base, 'home-with-linked-downloads');
+			await mkdir(otherHome, { recursive: true });
+			await symlink(otherHome, path.join(otherHome, 'Downloads'));
+			const warnings = [];
+			const file = await put(path.join(otherHome, 'm.png'));
+			const { result } = await attach(file, { homeDir: otherHome, warn: (message) => warnings.push(message) });
+			assert.equal(result.isError, true);
+			assert.match(text(result), OUTSIDE);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0], /Downloads \(a screenshot folder\): it is your home folder or a folder above it/);
+		});
+
+		test('a temp folder that is the home folder or above it allows nothing', async () => {
+			const file = await put(path.join(home, 'work', 'n.png'));
+			for (const tmpDirs of [[home], [base], [path.parse(home).root]]) {
+				const warnings = [];
+				const { result } = await attach(file, { tmpDirs, warn: (message) => warnings.push(message) });
+				assert.equal(result.isError, true, tmpDirs[0]);
+				assert.equal(warnings.length, 1);
+				assert.match(warnings[0], /\(a temp folder\): it is your home folder or a folder above it/);
+			}
+		});
+
+		test('TESTWISE_ATTACH_DIRS entries that are the home folder or above it are dropped, with one warning each', async () => {
+			const file = await put(path.join(home, 'work', 'o.png'));
+			for (const [entry, cwd] of [['~', project], ['/', project], ['..', project], ['.', home]]) {
+				const warnings = [];
+				const warn = (message) => warnings.push(message);
+				const env = { TESTWISE_ATTACH_DIRS: entry };
+				for (let attempt = 0; attempt < 2; attempt += 1) {
+					const { result, sent } = await attach(file, { cwd, env, warn });
+					assert.equal(result.isError, true, entry);
+					assert.equal(sent, false, entry);
+				}
+				const dropped = warnings.filter((message) => /\(listed in TESTWISE_ATTACH_DIRS\): it is your home folder or a folder above it/.test(message));
+				assert.equal(dropped.length, 1, `${entry}: ${warnings.join(' | ')}`);
 			}
 		});
 
@@ -122,8 +175,10 @@ describe('which files attach_file reads', () => {
 	});
 
 	describe('secrets inside the allowed folders', () => {
-		// Here the home folder is allowed, so these are refused by the block list alone.
-		const homeAllowed = () => ({ env: { TESTWISE_ATTACH_DIRS: home } });
+		// Here these folders in the home folder are allowed (the home folder itself never is), so the files below are
+		// refused by the block list alone.
+		const ALLOWED = ['.aws', '.azure', '.cargo', '.config', '.gnupg', '.kube', '.ssh', 'Library', 'dotfiles', 'work'];
+		const homeAllowed = () => ({ env: { TESTWISE_ATTACH_DIRS: ALLOWED.map((folder) => path.join(home, folder)).join(path.delimiter) } });
 
 		async function assertRefused(filePath, pattern = /so attach_file does not upload it/) {
 			const { result, sent } = await attach(filePath, homeAllowed());
@@ -166,10 +221,16 @@ describe('which files attach_file reads', () => {
 
 		test('credentials files that were not on the first list', async () => {
 			const files = [
-				'.config/gh/hosts.yml', '.zsh_history', '.bash_history', '.cargo/credentials.toml', '.cargo/credentials',
+				'.config/gh/hosts.yml', '.cargo/credentials.toml', '.cargo/credentials',
 				'.gnupg/pubring.kbx', '.kube/config', '.azure/msal_token_cache.json', 'Library/Keychains/login.keychain-db',
 			];
 			for (const name of files) await assertRefused(await put(path.join(home, name)));
+			// Shell histories sit in the home folder itself, which is never allowed; a hard link brings one into the project.
+			for (const name of ['.zsh_history', '.bash_history']) {
+				const history = await put(path.join(home, name));
+				await link(history, path.join(project, `${name.slice(1)}.txt`));
+				await assertRefused(path.join(project, `${name.slice(1)}.txt`));
+			}
 			for (const name of ['.pypirc', 'client.p12', 'client.pfx', 'release.jks', '.env.production', 'server.pem', 'tls.key', 'id_ed25519']) {
 				await assertRefused(await put(path.join(project, name)));
 			}

@@ -42,8 +42,10 @@ describe('attach_file', () => {
 		const credentials = remote.mintCredentials();
 		accessToken = Object.values(credentials.servers)[0].tokens.access_token;
 		await home.writeCredentials(credentials);
-		// The fake home folder is allowed too, so the secrets placed in it are refused by the block list alone.
-		proxy = await connectProxy({ url: remote.url, home: home.home, cwd: dir, env: { TESTWISE_ATTACH_DIRS: home.home } });
+		// Folders in the fake home folder are allowed too (the home folder itself never is), so the secrets placed in
+		// them are refused by the block list alone.
+		const allowed = ['.ssh', '.aws', '.config', '.docker', 'Library'].map((folder) => path.join(home.home, folder));
+		proxy = await connectProxy({ url: remote.url, home: home.home, cwd: dir, env: { TESTWISE_ATTACH_DIRS: allowed.join(path.delimiter) } });
 	});
 
 	beforeEach(() => {
@@ -249,7 +251,8 @@ describe('attach_file', () => {
 		for (const target of refused) {
 			const result = await attach(proxy, { key: 'LAR-41', path: target });
 			assert.equal(result.isError, true, target);
-			assert.match(text(result), /so attach_file does not upload it/, target);
+			// Refused by the block list, or (for files in the home folder itself) by the allowed folders.
+			assert.match(text(result), /so attach_file does not upload it|is outside the folders attach_file reads from/, target);
 		}
 		assert.equal(remote.state.calls.length, 0, 'TestWise was never asked for an upload');
 		assert.equal(remote.state.uploadRequests.length, 0);

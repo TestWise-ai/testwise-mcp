@@ -74,7 +74,7 @@ To switch to another project, run `logout`, then `login` (or call `connect`) and
 | `TESTWISE_URL` | TestWise address. Default `https://app.testwise.ai`. Must be `https://` (plain `http://` only for localhost). |
 | `~/.testwise/credentials.json` | Where the sign-in is kept, per TestWise address. Readable by you only (0600); renewed automatically. |
 | `BROWSER` | Optional: the program that opens the sign-in page. Without it, the system's default browser is used. The page's link is always printed too. |
-| `TESTWISE_ATTACH_DIRS` | Optional: more folders `attach_file` may read from, separated by `:` (`;` on Windows). Without it, `attach_file` reads only from the folder the server was started in (unless that is your home folder), the temp folder, and Desktop, Downloads, Pictures and Movies. |
+| `TESTWISE_ATTACH_DIRS` | Optional: more folders `attach_file` may read from, separated by `:` (`;` on Windows). Without it, `attach_file` reads only from the folder the server was started in (unless that is your home folder or a settings folder in it), the temp folder, and Desktop, Downloads, Pictures and Movies. A folder that is your home folder or above it is ignored, with a warning. |
 
 ### What signing in grants
 
@@ -211,8 +211,10 @@ when and how to publish, how to write good checks, how to act on updates, and a 
 - Tokens are kept out of the logs and redacted from error messages. `logout` revokes them at TestWise before deleting
   them. Several copies of the local server (one per agent session) share one sign-in and renew it one at a time.
 - `attach_file` refuses known secret locations and only reads from the project, temp and your screenshot folders
-  unless you allow more: the folder the local server was started in (not your home folder itself), the temp folder,
-  and Desktop, Downloads, Pictures and Movies, plus any folder in `TESTWISE_ATTACH_DIRS`.
+  unless you allow more: the folder the local server was started in (not your home folder, a folder above it, or a
+  settings folder such as `~/Library`, `~/.config` or `~/.local/share`), the temp folder, and Desktop, Downloads,
+  Pictures and Movies, plus any folder in `TESTWISE_ATTACH_DIRS`. None of these may be your home folder or a folder
+  above it, however it is named or linked; such a folder is ignored, with a warning.
   - The known secret locations are checked by file identity, so links, hard links and other spellings of a path lead
     to the same answer: your TestWise sign-in in `~/.testwise`, `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
     `~/.config/gh`, `~/.gnupg`, `~/.docker/config.json`, `~/.kube/config`, `~/.git-credentials`, `~/.cargo`

@@ -6,6 +6,8 @@ import { after, before, describe, test } from 'node:test';
 import { attachFile } from '../src/attach-file.js';
 
 const SIGNATURE = 'sig0123456789abcdef';
+// A home folder that does not exist, so the test's temp folder is not "above the home folder".
+const NO_HOME = path.join(path.parse(os.tmpdir()).root, 'no-such-home-for-testwise-tests');
 
 // The hosted side of an upload, with the ticket create_attachment_upload returns; no network involved.
 function stubRemote(endpoint, ticket) {
@@ -51,7 +53,7 @@ describe('upload links and headers from TestWise', () => {
 	function attach(endpoint, ticket) {
 		const remote = stubRemote(endpoint, ticket);
 		const { requests, fetchImpl } = stubFetch();
-		const run = attachFile({ key: 'LAR-41', path: file }, { remote, cwd: dir, homeDir: dir, fetchImpl });
+		const run = attachFile({ key: 'LAR-41', path: file }, { remote, cwd: dir, homeDir: NO_HOME, fetchImpl });
 		return run.then((result) => ({ result, requests, remote }));
 	}
 
@@ -98,7 +100,7 @@ describe('upload links and headers from TestWise', () => {
 			setTimeout(() => resolve(new Response(null, { status: 200 })), 200);
 		});
 		const result = await attachFile({ key: 'LAR-41', path: file }, {
-			remote, cwd: dir, homeDir: dir, fetchImpl, onprogress: (update) => updates.push(update), progressIntervalMs: 40,
+			remote, cwd: dir, homeDir: NO_HOME, fetchImpl, onprogress: (update) => updates.push(update), progressIntervalMs: 40,
 		});
 		assert.equal(result.isError, undefined, text(result));
 		const messages = updates.map((update) => update.message);
@@ -119,7 +121,7 @@ describe('upload links and headers from TestWise', () => {
 			});
 			setTimeout(() => controller.abort(), 20);
 		});
-		const result = await attachFile({ key: 'LAR-41', path: file }, { remote, cwd: dir, homeDir: dir, fetchImpl, signal: controller.signal });
+		const result = await attachFile({ key: 'LAR-41', path: file }, { remote, cwd: dir, homeDir: NO_HOME, fetchImpl, signal: controller.signal });
 		assert.equal(aborted, true, 'the upload request was aborted');
 		assert.equal(result.isError, true);
 		assert.match(text(result), /was cancelled/);
