@@ -66,6 +66,61 @@ describe('which files attach_file reads', () => {
 		return file;
 	}
 
+	describe('allowed folders', () => {
+		const OUTSIDE = /is outside the folders attach_file reads from: the project folder .*, the temp folder, and Desktop, Downloads, Pictures and Movies in your home folder\. To allow another folder, add it to TESTWISE_ATTACH_DIRS/;
+
+		test('the project folder and the screenshot folders are allowed; the rest of the home folder is not', async () => {
+			for (const file of [await put(path.join(project, 'shots', 'a.png')), await put(path.join(home, 'Desktop', 'Screen Shot.png'))]) {
+				const { result } = await attach(file);
+				assert.equal(result.isError, undefined, `${file}: ${text(result)}`);
+			}
+			for (const file of [await put(path.join(home, 'work', 'b.png')), await put(path.join(home, 'notes.txt')), await put(path.join(outside, 'c.png'))]) {
+				const { result, sent } = await attach(file);
+				assert.equal(result.isError, true, file);
+				assert.match(text(result), OUTSIDE);
+				assert.equal(sent, false);
+			}
+		});
+
+		test('a link from the project folder to a file elsewhere is judged by where the file is', async () => {
+			const target = await put(path.join(outside, 'd.png'));
+			await symlink(target, path.join(project, 'd.png'));
+			const { result } = await attach(path.join(project, 'd.png'));
+			assert.equal(result.isError, true);
+			assert.match(text(result), OUTSIDE);
+		});
+
+		test('started in the home folder or at the root, the project folder allows nothing', async () => {
+			const file = await put(path.join(home, 'work', 'e.png'));
+			for (const cwd of [home, path.parse(home).root]) {
+				const { result } = await attach(file, { cwd });
+				assert.equal(result.isError, true, cwd);
+				assert.match(text(result), /the project folder \(none: this server was started in .*, which is your home folder or above it\)/);
+			}
+		});
+
+		test('temp folders are allowed', async () => {
+			const { result } = await attach(await put(path.join(outside, 'f.png')), { tmpDirs: [outside] });
+			assert.equal(result.isError, undefined, text(result));
+		});
+
+		test('TESTWISE_ATTACH_DIRS adds folders', async () => {
+			const env = { TESTWISE_ATTACH_DIRS: [outside, '~/work'].join(path.delimiter) };
+			for (const file of [await put(path.join(outside, 'g.png')), await put(path.join(home, 'work', 'h.png'))]) {
+				const { result } = await attach(file, { env });
+				assert.equal(result.isError, undefined, `${file}: ${text(result)}`);
+			}
+			const { result } = await attach(await put(path.join(home, 'i.png')), { env });
+			assert.equal(result.isError, true);
+		});
+
+		test('another spelling of an allowed folder is still allowed', { skip: !existsSync('/System/Volumes/Data') }, async () => {
+			const file = await put(path.join(project, 'j.png'));
+			const { result } = await attach(path.join('/System/Volumes/Data', file));
+			assert.equal(result.isError, undefined, text(result));
+		});
+	});
+
 	describe('secrets inside the allowed folders', () => {
 		// Here the home folder is allowed, so these are refused by the block list alone.
 		const homeAllowed = () => ({ env: { TESTWISE_ATTACH_DIRS: home } });

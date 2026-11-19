@@ -1,9 +1,17 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, realpath, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
-// Which local files attach_file refuses to upload. Folders and files are compared by identity (device and inode),
-// following links both ways, so another spelling of a path (a macOS firmlink such as /System/Volumes/Data/...,
-// a dotfile folder that is a link, a link inside a blocked folder that points out of it, a hard link) is caught too.
+// Which local files attach_file reads. Two rules, both decided by identity (device and inode) and following links
+// both ways, so another spelling of a path (a macOS firmlink such as /System/Volumes/Data/..., a dotfile folder that
+// is a link, a link inside a blocked folder that points out of it, a hard link) gets around neither:
+// 1. The file must be inside an allowed folder: the project folder this server was started in (unless that is the
+//    home folder or above it), the temp folders, the folders screenshots and recordings usually land in, and any
+//    folder listed in TESTWISE_ATTACH_DIRS.
+// 2. Inside those, known homes of credentials and keys are refused, as are key and secret file names and files that
+//    hold a private key.
+
+const SCREENSHOT_FOLDERS = ['Desktop', 'Downloads', 'Pictures', 'Movies'];
 
 // Relative to the home folder.
 const BLOCKED_DIRECTORIES = ['.testwise', '.ssh', '.aws', '.azure', '.gnupg', '.config/gcloud', '.config/gh', 'Library/Keychains'];
@@ -111,4 +119,43 @@ export function blockedRule({ resolved, real, chain, homeDir, blocked }) {
 export function holdsPrivateKey(bytes) {
 	const text = bytes.toString('latin1');
 	return PRIVATE_KEY.test(text) || (SERVICE_ACCOUNT.test(text) && text.includes('"private_key"'));
+}
+
+export function defaultTmpDirs() {
+	return process.platform === 'win32' ? [os.tmpdir()] : [os.tmpdir(), '/tmp', '/private/tmp'];
+}
+
+// TESTWISE_ATTACH_DIRS: folders separated by the platform's path delimiter; "~/" means the home folder.
+function extraFolders(env, cwd, homeDir) {
+	return String(env?.TESTWISE_ATTACH_DIRS ?? '')
+		.split(path.delimiter)
+		.map((entry) => entry.trim())
+		.filter(Boolean)
+		.map((entry) => path.resolve(cwd, entry === '~' || entry.startsWith('~/') ? path.join(homeDir, entry.slice(1)) : entry));
+}
+
+// The identities of the allowed folders that exist, and whether the project folder is one of them.
+export async function allowedFolders({ cwd, homeDir, env, tmpDirs }) {
+	const ids = new Set();
+	const add = async (folder) => {
+		const found = await identity(folder);
+		if (found?.directory) ids.add(found.id);
+	};
+	const homeAndAbove = new Set(await ancestry(await realpath(homeDir).catch(() => homeDir)));
+	const project = await identity(cwd);
+	const projectAllowed = Boolean(project?.directory) && !homeAndAbove.has(project.id);
+	if (projectAllowed) ids.add(project.id);
+	for (const folder of tmpDirs) await add(folder);
+	for (const folder of SCREENSHOT_FOLDERS) await add(path.join(homeDir, folder));
+	for (const folder of extraFolders(env, cwd, homeDir)) await add(folder);
+	return { ids, projectAllowed };
+}
+
+export function outsideMessage(resolved, { cwd, projectAllowed }) {
+	const project = projectAllowed
+		? `the project folder (${cwd})`
+		: `the project folder (none: this server was started in ${cwd}, which is your home folder or above it)`;
+	return `${resolved} is outside the folders attach_file reads from: ${project}, the temp folder, and Desktop, Downloads, `
+		+ 'Pictures and Movies in your home folder. To allow another folder, add it to TESTWISE_ATTACH_DIRS in this '
+		+ `server's environment (separate several with "${path.delimiter}").`;
 }

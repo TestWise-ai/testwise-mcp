@@ -96,7 +96,9 @@ check it again. Don't request a retest for a fix that isn't in an installable bu
 With the local server (`npx -y testwise-mcp`), `attach_file` uploads a file from this machine to an item: a screenshot
 or screen recording from a real device, a log, a crash report. Pass an absolute path; files up to 25 MB. Attach
 evidence to the bug it explains (for example the log that shows the fix working). Never attach credentials, `.env`
-files or keys; `attach_file` refuses them.
+files or keys; `attach_file` refuses them. It reads from the project folder, the temp folder, and Desktop, Downloads,
+Pictures and Movies; if evidence is elsewhere, ask the user to move it there or to add its folder to
+`TESTWISE_ATTACH_DIRS`.
 
 ## Other tools
 

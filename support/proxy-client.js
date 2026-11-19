@@ -43,11 +43,11 @@ export function childEnv({ url, home, browser = FAKE_BROWSER }) {
 	return { TESTWISE_URL: url, HOME: home, USERPROFILE: home, BROWSER: browser };
 }
 
-export async function connectProxy({ url, home, cwd }) {
+export async function connectProxy({ url, home, cwd, env = {} }) {
 	const transport = new StdioClientTransport({
 		command: process.execPath,
 		args: [BIN],
-		env: childEnv({ url, home }),
+		env: { ...childEnv({ url, home }), ...env },
 		cwd,
 		stderr: 'pipe',
 	});

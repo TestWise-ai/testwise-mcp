@@ -4,7 +4,7 @@ import { open, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
-import { ancestry, blockedRule, blockedSet, holdsPrivateKey } from './attach-policy.js';
+import { allowedFolders, ancestry, blockedRule, blockedSet, defaultTmpDirs, holdsPrivateKey, outsideMessage } from './attach-policy.js';
 import { isSecureUrl } from './config.js';
 import { forgetSecret, redact, registerSecret } from './redact.js';
 import { readAttachment, readUploadTicket, resultText } from './tool-result.js';
@@ -50,7 +50,9 @@ export const attachFileTool = {
 		'a screenshot or screen recording from a real device, a log, a crash report or a network capture.',
 		`The file must be ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB or smaller; its type comes from the extension.`,
 		'Prefer an absolute path. A relative path is resolved against the directory this server was started in. URLs are not accepted.',
-		'Returns the attachment with its size and type. Attach only evidence you captured; never attach credentials, .env files or keys.',
+		'Files are read only from that directory, the temp folder, and Desktop, Downloads, Pictures and Movies in the home folder',
+		'(plus any folder the user lists in TESTWISE_ATTACH_DIRS); credentials, keys and other known secret files are refused.',
+		'Returns the attachment with its size and type. Attach only evidence you captured.',
 	].join(' '),
 	inputSchema: {
 		type: 'object',
@@ -114,7 +116,7 @@ function refusedSecret(resolved, rule) {
 	return new AttachError(`${resolved} is a credentials or key file (${rule}), so attach_file does not upload it.`);
 }
 
-async function readLocalFile(resolved, homeDir) {
+async function readLocalFile(resolved, { cwd, homeDir, env, tmpDirs }) {
 	let real;
 	try {
 		real = await realpath(resolved);
@@ -122,6 +124,8 @@ async function readLocalFile(resolved, homeDir) {
 		throw unreadable(resolved, error);
 	}
 	const chain = await ancestry(real);
+	const allowed = await allowedFolders({ cwd, homeDir, env, tmpDirs });
+	if (!chain.some((id) => allowed.ids.has(id))) throw new AttachError(outsideMessage(resolved, { cwd, ...allowed }));
 	const { blocked, complete } = await blockedSet(homeDir);
 	const rule = blockedRule({ resolved, real, chain, homeDir, blocked });
 	if (rule) throw refusedSecret(resolved, rule);
@@ -255,7 +259,8 @@ function progressReporter(onprogress) {
 }
 
 export async function attachFile(args, {
-	remote, cwd = process.cwd(), homeDir = os.homedir(), fetchImpl = globalThis.fetch, signal, onprogress, progressIntervalMs = PROGRESS_INTERVAL_MS,
+	remote, cwd = process.cwd(), homeDir = os.homedir(), env = process.env, tmpDirs = defaultTmpDirs(), fetchImpl = globalThis.fetch,
+	signal, onprogress, progressIntervalMs = PROGRESS_INTERVAL_MS,
 }) {
 	const report = progressReporter(onprogress);
 	const key = typeof args?.key === 'string' ? args.key.trim() : '';
@@ -268,7 +273,7 @@ export async function attachFile(args, {
 	let bytes;
 	try {
 		resolved = resolveLocalPath(filePath, cwd, { homeDir });
-		bytes = await readLocalFile(resolved, homeDir);
+		bytes = await readLocalFile(resolved, { cwd, homeDir, env, tmpDirs });
 	} catch (error) {
 		if (error instanceof AttachError) return failure(error.message);
 		return failure(`${resolved ?? filePath} cannot be read (${error.code ?? error.message}).`);

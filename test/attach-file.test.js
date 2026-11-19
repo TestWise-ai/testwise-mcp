@@ -42,7 +42,8 @@ describe('attach_file', () => {
 		const credentials = remote.mintCredentials();
 		accessToken = Object.values(credentials.servers)[0].tokens.access_token;
 		await home.writeCredentials(credentials);
-		proxy = await connectProxy({ url: remote.url, home: home.home, cwd: dir });
+		// The fake home folder is allowed too, so the secrets placed in it are refused by the block list alone.
+		proxy = await connectProxy({ url: remote.url, home: home.home, cwd: dir, env: { TESTWISE_ATTACH_DIRS: home.home } });
 	});
 
 	beforeEach(() => {
@@ -267,5 +268,37 @@ describe('attach_file', () => {
 		const result = await attach(proxy, { key: '', path: screenshot });
 		assert.equal(result.isError, true);
 		assert.match(text(result), /"key" is required/);
+	});
+});
+
+describe('attach_file with the default folders', () => {
+	let remote;
+	let home;
+	let proxy;
+	let dir;
+
+	before(async () => {
+		dir = await mkdtemp(path.join(os.tmpdir(), 'testwise-mcp-'));
+		remote = await startFakeTestwise();
+		home = await makeHome();
+		await home.writeCredentials(remote.mintCredentials());
+		proxy = await connectProxy({ url: remote.url, home: home.home, cwd: dir });
+	});
+
+	after(async () => {
+		await proxy?.close();
+		await remote?.close();
+		await home?.remove();
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test('reads from the folder the server started in, and not from elsewhere in the home folder', async () => {
+		await writeFile(path.join(dir, 'shot.png'), PNG);
+		await writeFile(path.join(home.home, 'shot.png'), PNG);
+		const inProject = await attach(proxy, { key: 'LAR-41', path: 'shot.png' });
+		assert.equal(inProject.isError, undefined, text(inProject));
+		const inHome = await attach(proxy, { key: 'LAR-41', path: '~/shot.png' });
+		assert.equal(inHome.isError, true);
+		assert.match(text(inHome), /is outside the folders attach_file reads from: the project folder \(.*\), the temp folder, and Desktop, Downloads, Pictures and Movies in your home folder\. To allow another folder, add it to TESTWISE_ATTACH_DIRS/);
 	});
 });

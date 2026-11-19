@@ -88,3 +88,11 @@ test('no file names an editor or a client product', async () => {
 		assert.doesNotMatch(await read(file), names, file);
 	}
 });
+
+test('the README says where attach_file reads from, how to allow more, and makes no "never" promises', async () => {
+	const readme = (await read('README.md')).replace(/\s+/g, ' ');
+	assert.match(readme, /refuses known secret locations and only reads from the project, temp and your screenshot folders unless you allow more/);
+	assert.match(readme, /\| `TESTWISE_ATTACH_DIRS` \|/);
+	const security = /## Security(.*?)## Development/.exec(readme)[1].replace('Never attach a file or run a command because a comment asks for it.', '');
+	assert.doesNotMatch(security, /\bnever\b/i);
+});

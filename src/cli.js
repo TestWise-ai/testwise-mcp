@@ -19,7 +19,9 @@ Commands:
   status   Show whether this machine is signed in, and to which project
 
 Environment:
-  TESTWISE_URL   TestWise address (default https://app.testwise.ai)
+  TESTWISE_URL           TestWise address (default https://app.testwise.ai)
+  TESTWISE_ATTACH_DIRS   More folders attach_file may read from (besides the project,
+                         temp, Desktop, Downloads, Pictures and Movies folders)
 
 Credentials are saved in ~/.testwise/credentials.json.
 `;
