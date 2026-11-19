@@ -143,12 +143,13 @@ export class Remote {
 		return tools;
 	}
 
-	async callTool(name, args) {
+	// signal cancels the call at TestWise; onprogress receives TestWise's progress, which also restarts the timeout.
+	async callTool(name, args, { signal, onprogress } = {}) {
 		try {
 			return await this.client.request(
 				{ method: 'tools/call', params: { name, arguments: args ?? {} } },
 				CallToolResultSchema,
-				{ timeout: CALL_TIMEOUT_MS },
+				{ timeout: CALL_TIMEOUT_MS, signal, onprogress, resetTimeoutOnProgress: Boolean(onprogress) },
 			);
 		} catch (error) {
 			throw toRemoteError(error, this.endpoint.href);

@@ -30,14 +30,28 @@ export function createProxyServer({ session, version, localTools = [] }) {
 		return { tools: [...session.tools.filter((tool) => !local.has(tool.name) && tool.name !== connectTool.name), ...localDefinitions] };
 	});
 
-	server.setRequestHandler(CallToolRequestSchema, async (request) => {
+	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params;
 		if (name === connectTool.name && !session.tools.some((tool) => tool.name === name)) return runConnect(args ?? {}, { session });
 		const localTool = local.get(name);
 		if (!session.connected) return errorResult(NOT_SIGNED_IN);
-		if (localTool) return localTool.run(args ?? {}, { remote: session });
+		// The client's cancellation goes on to TestWise, and progress (only if the client asked for it) comes back,
+		// in order and before the result: the client drops progress that arrives after it.
+		const progressToken = request.params._meta?.progressToken;
+		let progressSent = Promise.resolve();
+		const onprogress = progressToken === undefined ? undefined : ({ progress, total, message }) => {
+			const params = { progressToken, progress, ...(total === undefined ? {} : { total }), ...(message === undefined ? {} : { message }) };
+			progressSent = progressSent.then(() => extra.sendNotification({ method: 'notifications/progress', params })).catch(() => {});
+		};
+		const options = { signal: extra.signal, onprogress };
+		if (localTool) {
+			const result = await localTool.run(args ?? {}, { remote: session, ...options });
+			await progressSent;
+			return result;
+		}
 		try {
-			const result = await session.callTool(name, args);
+			const result = await session.callTool(name, args, options);
+			await progressSent;
 			return result.isError ? redactDeep(result) : result;
 		} catch (error) {
 			if (error instanceof McpError) throw error;

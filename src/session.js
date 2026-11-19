@@ -95,9 +95,9 @@ export class Session extends EventEmitter {
 		}
 	}
 
-	async callTool(name, args) {
+	async callTool(name, args, options) {
 		try {
-			return await this.remote.callTool(name, args);
+			return await this.remote.callTool(name, args, options);
 		} catch (error) {
 			if (error instanceof RemoteError && error.kind === 'auth') await this.signedOut(error.message);
 			throw error;

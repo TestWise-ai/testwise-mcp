@@ -272,16 +272,18 @@ async function handleMcp(req, res, state) {
 		return;
 	}
 	const body = JSON.parse((await readBody(req)).toString('utf8'));
+	state.messages.push(body);
 	const server = new Server({ name: 'testwise', version: '0.0.0-test' }, { capabilities: { tools: {} }, instructions: state.instructions });
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...state.tools.values()].map((tool) => tool.definition) }));
-	server.setRequestHandler(CallToolRequestSchema, async (request) => {
+	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args = {} } = request.params;
 		state.calls.push({ name, arguments: args });
 		const tool = state.tools.get(name);
 		if (!tool) throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
-		return tool.run(args, { token });
+		return tool.run(args, { token, extra });
 	});
-	const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+	// With streamResponses, answers come as an SSE stream, so a tool can send progress before its result.
+	const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: !state.streamResponses });
 	res.on('close', () => {
 		transport.close();
 		server.close();
@@ -375,6 +377,9 @@ export async function startFakeTestwise({ instructions = FAKE_INSTRUCTIONS, acce
 		tools: new Map(),
 		calls: [],
 		requests: [],
+		// Every JSON-RPC message an authorized client posted to /mcp.
+		messages: [],
+		streamResponses: false,
 		discoveryRequests: [],
 		authorizeRequests: [],
 		tokenRequests: [],
