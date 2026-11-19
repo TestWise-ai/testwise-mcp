@@ -9,7 +9,10 @@ import { forgetSecret, redact, registerSecret } from './redact.js';
 import { readAttachment, readUploadTicket, resultText } from './tool-result.js';
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// An upload may take up to five minutes. Most MCP clients stop waiting after 60 seconds unless progress arrives, so
+// a client that asked for progress hears about the upload every PROGRESS_INTERVAL_MS.
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const PROGRESS_INTERVAL_MS = 10_000;
 
 const CONTENT_TYPES = {
 	'.txt': 'text/plain',
@@ -180,9 +183,9 @@ function describeCallError(error) {
 	return error?.message ?? String(error);
 }
 
-async function callStep(remote, toolName, args) {
+async function callStep(remote, toolName, args, signal) {
 	try {
-		return { result: await remote.callTool(toolName, args) };
+		return { result: await remote.callTool(toolName, args, { signal }) };
 	} catch (error) {
 		return { error: describeCallError(error) };
 	}
@@ -234,7 +237,7 @@ async function storageErrorCode(response) {
 	}
 }
 
-async function upload({ ticket, bytes, headers, fetchImpl }) {
+async function upload({ ticket, bytes, headers, fetchImpl, signal }) {
 	let response;
 	try {
 		response = await fetchImpl(ticket.uploadUrl, {
@@ -242,9 +245,10 @@ async function upload({ ticket, bytes, headers, fetchImpl }) {
 			headers,
 			body: bytes,
 			redirect: 'error',
-			signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(UPLOAD_TIMEOUT_MS)]) : AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
 		});
 	} catch (error) {
+		if (signal?.aborted) return { cancelled: true, error: 'the upload was cancelled' };
 		return { error: `could not reach storage (${networkReason(error)})` };
 	}
 	if (response.ok) {
@@ -255,7 +259,19 @@ async function upload({ ticket, bytes, headers, fetchImpl }) {
 	return { status: response.status, error: `storage answered HTTP ${response.status}${code ? ` (${code})` : ''}` };
 }
 
-export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = os.homedir(), fetchImpl = globalThis.fetch }) {
+// Reports progress only when the client asked for it (onprogress set); each report counts up by one.
+function progressReporter(onprogress) {
+	let count = 0;
+	return (message) => {
+		count += 1;
+		onprogress?.({ progress: count, message });
+	};
+}
+
+export async function attachFile(args, {
+	remote, cwd = process.cwd(), homeDir = os.homedir(), fetchImpl = globalThis.fetch, signal, onprogress, progressIntervalMs = PROGRESS_INTERVAL_MS,
+}) {
+	const report = progressReporter(onprogress);
 	const key = typeof args?.key === 'string' ? args.key.trim() : '';
 	const filePath = typeof args?.path === 'string' ? args.path : '';
 	if (!key) return failure('"key" is required, for example "LAR-41".');
@@ -278,7 +294,7 @@ export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = 
 	const sha256 = createHash('sha256').update(bytes).digest('hex');
 	const described = `${fileName} (${formatBytes(size)}, ${contentType})`;
 
-	const created = await callStep(remote, 'create_attachment_upload', { key, fileName, contentType, size, checksum: sha256 });
+	const created = await callStep(remote, 'create_attachment_upload', { key, fileName, contentType, size, checksum: sha256 }, signal);
 	if (created.error) return failure(`TestWise could not start the upload of ${described} to ${key} (create_attachment_upload): ${created.error}`);
 	if (created.result.isError) {
 		return failure(`TestWise refused the upload of ${described} to ${key} (create_attachment_upload): ${resultText(created.result) || 'no reason given'}`);
@@ -296,18 +312,24 @@ export async function attachFile(args, { remote, cwd = process.cwd(), homeDir = 
 	if (badHeaders) return failure(`${badHeaders} (${described})`);
 
 	registerSecret(ticket.uploadUrl);
+	report(`Uploading ${described} to ${key}`);
+	const started = Date.now();
+	const heartbeat = setInterval(() => report(`Still uploading ${described} (${Math.round((Date.now() - started) / 1000)} s)`), progressIntervalMs);
 	let uploaded;
 	try {
-		uploaded = await upload({ ticket, bytes, headers, fetchImpl });
+		uploaded = await upload({ ticket, bytes, headers, fetchImpl, signal });
 	} finally {
+		clearInterval(heartbeat);
 		forgetSecret(ticket.uploadUrl);
 	}
+	if (uploaded.cancelled) return failure(`uploading ${described} to ${key} was cancelled.`);
 	if (uploaded.error) {
 		const hint = uploaded.status === 403 ? ' The upload link may have expired, or the file changed after it was requested.' : '';
 		return failure(`uploading ${described} to ${key} failed: ${uploaded.error}.${hint} Run attach_file again.`);
 	}
 
-	const completed = await callStep(remote, 'complete_attachment_upload', { key, attachmentId: ticket.attachmentId });
+	report(`Uploaded; adding it to ${key}`);
+	const completed = await callStep(remote, 'complete_attachment_upload', { key, attachmentId: ticket.attachmentId }, signal);
 	if (completed.error || completed.result.isError) {
 		const reason = completed.error ?? (resultText(completed.result) || 'no reason given');
 		return failure(`${described} was uploaded, but TestWise did not add it to ${key} (complete_attachment_upload): ${reason}`);

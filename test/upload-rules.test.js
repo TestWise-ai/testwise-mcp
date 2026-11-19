@@ -91,6 +91,41 @@ describe('upload links and headers from TestWise', () => {
 		}
 	});
 
+	test('a slow upload reports progress at intervals, so the client keeps waiting', async () => {
+		const remote = stubRemote('https://testwise.example/mcp', { uploadUrl: 'https://storage.example/a1?sig=x' });
+		const updates = [];
+		const fetchImpl = () => new Promise((resolve) => {
+			setTimeout(() => resolve(new Response(null, { status: 200 })), 200);
+		});
+		const result = await attachFile({ key: 'LAR-41', path: file }, {
+			remote, cwd: dir, homeDir: dir, fetchImpl, onprogress: (update) => updates.push(update), progressIntervalMs: 40,
+		});
+		assert.equal(result.isError, undefined, text(result));
+		const messages = updates.map((update) => update.message);
+		assert.match(messages[0], /^Uploading crash\.log \(4 B, text\/plain\) to LAR-41$/);
+		assert.ok(messages.filter((message) => /^Still uploading crash\.log/.test(message)).length >= 2, messages.join(' | '));
+		assert.match(messages.at(-1), /^Uploaded; adding it to LAR-41$/);
+		assert.ok(updates.every((update, index) => index === 0 || update.progress > updates[index - 1].progress), 'progress only increases');
+	});
+
+	test('cancelling stops the upload and skips the complete step', async () => {
+		const remote = stubRemote('https://testwise.example/mcp', { uploadUrl: 'https://storage.example/a1?sig=x' });
+		const controller = new AbortController();
+		let aborted = false;
+		const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+			init.signal.addEventListener('abort', () => {
+				aborted = true;
+				reject(init.signal.reason);
+			});
+			setTimeout(() => controller.abort(), 20);
+		});
+		const result = await attachFile({ key: 'LAR-41', path: file }, { remote, cwd: dir, homeDir: dir, fetchImpl, signal: controller.signal });
+		assert.equal(aborted, true, 'the upload request was aborted');
+		assert.equal(result.isError, true);
+		assert.match(text(result), /was cancelled/);
+		assert.deepEqual(remote.calls, ['create_attachment_upload']);
+	});
+
 	test('a well-formed ticket still uploads with its headers', async () => {
 		const { result, requests } = await attach('https://testwise.example/mcp', {
 			uploadUrl: 'https://storage.example/a1?sig=x', headers: { 'If-None-Match': '*', 'x-amz-meta-sha256': 'abc' },

@@ -88,6 +88,15 @@ describe('attach_file', () => {
 		assertNoSecrets(proxy.stderr());
 	});
 
+	test('reports progress to a client that asks for it', async () => {
+		const updates = [];
+		const result = await proxy.client.callTool({ name: 'attach_file', arguments: { key: 'LAR-41', path: screenshot } }, undefined, {
+			onprogress: (update) => updates.push(update),
+		});
+		assert.equal(result.isError, undefined, text(result));
+		assert.match(updates[0]?.message ?? '', /^Uploading shared-list\.png \(2\.0 KB, image\/png\) to LAR-41$/);
+	});
+
 	test('resolves a relative path against the working directory and honours name', async () => {
 		const result = await attach(proxy, { key: 'LAR-41', path: 'shared-list.png', name: 'iphone-15-build-212.png' });
 		assert.equal(result.isError, undefined, text(result));

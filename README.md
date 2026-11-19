@@ -98,7 +98,7 @@ The local server lists whatever tools the remote server offers, so new ones appe
 | `list_members` | The project's members with their name, email and role: the emails to use as assignees. |
 | `whoami` | The project, user and connection the agent acts for. |
 | `connect` (local) | Signs in through the browser. Listed only while the local server is signed out. |
-| `attach_file` (local) | Uploads a local file, up to 25 MB, to an item: `{ "key": "LAR-41", "path": "/abs/path/to/screenshot.png" }`. |
+| `attach_file` (local) | Uploads a local file, up to 25 MB, to an item: `{ "key": "LAR-41", "path": "/abs/path/to/screenshot.png" }`. An upload may take up to 5 minutes on a slow connection; it reports progress every 10 seconds, which keeps clients that honour progress waiting. Clients that don't may give up after their own timeout (often 60 seconds) and cancel it. |
 
 ## Writing a good handoff
 
