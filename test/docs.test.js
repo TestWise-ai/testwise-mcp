@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8');
@@ -76,4 +76,15 @@ test('the README security notes match what the package does', async () => {
 	assert.match(readme, /token and revocation endpoints/);
 	assert.match(readme, /~\/\.testwise/);
 	assert.match(readme, /UNC/);
+});
+
+test('no file names an editor or a client product', async () => {
+	const names = /\b(?:vscode|visual studio|jetbrains|intellij|windsurf|copilot|codex|xcode|sublime|neovim|emacs|aider)\b/i;
+	const files = ['README.md', 'package.json', '.github/workflows/test.yml'];
+	for (const folder of ['src', 'support', 'test', 'skills/testwise-handoff', 'snippets', 'bin']) {
+		for (const name of await readdir(new URL(`../${folder}/`, import.meta.url))) files.push(`${folder}/${name}`);
+	}
+	for (const file of files.filter((name) => name !== 'test/docs.test.js')) {
+		assert.doesNotMatch(await read(file), names, file);
+	}
 });

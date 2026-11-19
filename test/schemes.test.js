@@ -22,7 +22,7 @@ test('only https, or http on loopback when TestWise itself is on loopback, count
 	assert.equal(isSecureUrl('http://127.0.0.1:9000/authorize', local), true);
 	assert.equal(isSecureUrl('http://localhost:9000/authorize', local), true);
 	assert.equal(isSecureUrl('http://login.example/authorize', local), false);
-	for (const url of ['file:///etc/passwd', 'ms-msdt:/id', 'javascript:alert(1)', 'vscode://x', 'ftp://login.example/', 'not a url']) {
+	for (const url of ['file:///etc/passwd', 'ms-msdt:/id', 'javascript:alert(1)', 'example-app://x', 'ftp://login.example/', 'not a url']) {
 		assert.equal(isSecureUrl(url, local), false, url);
 	}
 });
@@ -47,7 +47,7 @@ describe('sign-in URLs from the metadata', () => {
 	const endpoints = {
 		'file:': () => 'file:///etc/passwd',
 		'ms-msdt:': () => 'ms-msdt:/id',
-		'a custom scheme': () => 'vscode://testwise/authorize',
+		'a custom scheme': () => 'example-app://testwise/authorize',
 		'plain http on another host': () => plainHttp(fake, '/oauth/authorize'),
 	};
 	for (const [label, endpoint] of Object.entries(endpoints)) {
